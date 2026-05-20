@@ -76,6 +76,7 @@ class CodexReviewAuditor:
 
     def process_once(self, *, wait: bool = False) -> int:
         self._collect_finished()
+        self._recover_orphaned_inflight_reviews()
         count = 0
         started_review_ids: list[str] = []
         active_workers = self._active_workers()
@@ -150,6 +151,31 @@ class CodexReviewAuditor:
             for review_id in finished:
                 self._futures.pop(review_id, None)
                 self._future_workers.pop(review_id, None)
+
+    def _recover_orphaned_inflight_reviews(self) -> None:
+        with self._futures_lock:
+            active_review_ids = {
+                review_id for review_id, future in self._futures.items() if not future.done()
+            }
+        for status in ("codex_reviewing", "deploying"):
+            for review in self.store.list_reviews(limit=100, status=status):
+                review_id = str(review.get("review_id") or "")
+                if not review_id or review_id in active_review_ids:
+                    continue
+                decision = review.get("decision") if isinstance(review.get("decision"), dict) else {}
+                self.store.decide_review(
+                    review_id,
+                    "retry_requested",
+                    {
+                        **decision,
+                        "source": "auditor",
+                        "status": "recovered_after_restart",
+                        "recovered_from_status": status,
+                        "summary": "审核进程重启后恢复未完成部署，已重新排队。",
+                        "decided_at": utc_now_iso(),
+                    },
+                )
+                log.warning("requeued orphaned in-flight review after restart: %s from %s", review_id, status)
 
     def _active_workers(self) -> set[str]:
         active: set[str] = set()

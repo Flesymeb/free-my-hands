@@ -209,6 +209,44 @@ def test_auditor_does_not_run_same_worker_in_parallel(tmp_path, monkeypatch) -> 
         auditor.shutdown()
 
 
+def test_auditor_requeues_orphaned_inflight_reviews_after_restart(tmp_path, monkeypatch) -> None:
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        reusable_workers=ReusableWorkersConfig(max_parallel_deployments=2),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.create_review(
+        "rvw-orphan",
+        "reuse_row_selected",
+        "192.0.2.20:model-orphan",
+        _review_payload("192.0.2.20", "model-orphan"),
+        status="deploying",
+    )
+    auditor = CodexReviewAuditor(config, store, NullFeishuClient())
+    started: list[str] = []
+    block = threading.Event()
+
+    def fake_process(review: dict[str, object]) -> None:
+        started.append(str(review["review_id"]))
+        block.wait(2)
+
+    monkeypatch.setattr(auditor, "_process_review", fake_process)
+    try:
+        count = auditor.process_once()
+        _wait_until(lambda: started == ["rvw-orphan"])
+
+        assert count == 1
+        review = store.get_review("rvw-orphan")
+        assert review is not None
+        assert review["status"] == "codex_reviewing"
+        decision = review["decision"]
+        assert isinstance(decision, dict)
+        assert decision["status"] == "claimed"
+    finally:
+        block.set()
+        auditor.shutdown()
+
+
 def _review_payload(ip: str, model_id: str) -> dict[str, object]:
     return {
         "review_id": f"rvw-{ip}-{model_id}",
