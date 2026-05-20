@@ -35,10 +35,16 @@ class FakeFeishuClient:
         self.reactions: list[tuple[str, str]] = []
         self.requested_tasks: list[str] = []
         self.polled_chat_ids: list[str] = []
+        self.bot_open_id = "ou_bot"
+        self.bot_open_id_calls = 0
         self._message_counter = 0
 
     def list_chats(self, page_size: int = 50) -> list[dict[str, Any]]:
         return self.chats
+
+    def get_bot_open_id(self) -> str:
+        self.bot_open_id_calls += 1
+        return self.bot_open_id
 
     def list_messages(
         self,
@@ -350,8 +356,8 @@ def test_at_bot_command_adds_reaction(tmp_path) -> None:
                 "msg_type": "text",
                 "create_time": str(now_ms),
                 "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
-                "body": {"content": '{"text":"<at id=\\"cli_bot\\"></at> 检测任务"}'},
-                "mentions": [{"id": "cli_bot", "id_type": "app_id", "name": "模型部署bot"}],
+                "body": {"content": '{"text":"@_user_1 检测任务"}'},
+                "mentions": [{"id": "ou_bot", "id_type": "open_id", "key": "@_user_1", "name": "模型部署bot"}],
             }
         ]
     )
@@ -370,6 +376,7 @@ def test_at_bot_command_adds_reaction(tmp_path) -> None:
     worker.poll_once()
 
     assert fake.reactions == [("om_at", "SALUTE")]
+    assert fake.bot_open_id_calls == 1
 
 
 def test_at_other_bot_command_does_not_add_reaction(tmp_path) -> None:
@@ -381,8 +388,8 @@ def test_at_other_bot_command_does_not_add_reaction(tmp_path) -> None:
                 "msg_type": "text",
                 "create_time": str(now_ms),
                 "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
-                "body": {"content": '{"text":"<at id=\\"cli_other\\"></at> 检测任务"}'},
-                "mentions": [{"id": "cli_other", "id_type": "app_id", "name": "其他bot"}],
+                "body": {"content": '{"text":"@_user_1 检测任务"}'},
+                "mentions": [{"id": "ou_other", "id_type": "open_id", "key": "@_user_1", "name": "其他bot"}],
             }
         ]
     )
@@ -401,6 +408,38 @@ def test_at_other_bot_command_does_not_add_reaction(tmp_path) -> None:
     worker.poll_once()
 
     assert fake.reactions == []
+
+
+def test_at_bot_command_uses_configured_bot_open_id_without_lookup(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_at",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+                "body": {"content": '{"text":"@_user_1 检测任务"}'},
+                "mentions": [{"id": "ou_config_bot", "id_type": "open_id", "key": "@_user_1", "name": "模型部署bot"}],
+            }
+        ]
+    )
+    config = AppConfig(
+        feishu=FeishuConfig(app_id="cli_bot", bot_open_id="ou_config_bot"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True, manual_poll_lookback_sec=600),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    worker.poll_once()
+
+    assert fake.reactions == [("om_at", "SALUTE")]
+    assert fake.bot_open_id_calls == 0
 
 
 def test_polling_auto_discovers_joined_chats(tmp_path) -> None:

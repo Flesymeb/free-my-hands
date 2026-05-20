@@ -143,6 +143,15 @@ class FeishuOpenAPIClient:
         reaction_id = data.get("data", {}).get("reaction_id")
         return str(reaction_id or "")
 
+    def get_bot_open_id(self) -> str:
+        data = self._get("/bot/v3/info")
+        bot = data.get("data", {}).get("bot")
+        if not isinstance(bot, dict):
+            bot = data.get("bot")
+        if not isinstance(bot, dict):
+            return ""
+        return str(bot.get("open_id") or "")
+
     def list_chats(self, page_size: int = 50) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         page_token = ""
@@ -463,6 +472,9 @@ class NullFeishuClient:
         return None
 
     def add_message_reaction(self, message_id: str, emoji_type: str) -> str:
+        return ""
+
+    def get_bot_open_id(self) -> str:
         return ""
 
     def list_chats(self, page_size: int = 50) -> list[dict[str, Any]]:

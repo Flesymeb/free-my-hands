@@ -1,6 +1,8 @@
 [feishu]
 app_id = "cli_xxx"
 app_secret = "your_app_secret"
+# Optional. If empty, the bot tries /bot/v3/info to resolve its open_id.
+bot_open_id = ""
 # Optional. Used only for user-owned task completion; normal bot APIs still
 # use app_id/app_secret to fetch tenant_access_token.
 user_access_token = "u_xxx"

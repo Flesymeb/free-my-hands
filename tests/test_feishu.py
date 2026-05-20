@@ -123,6 +123,29 @@ def test_add_message_reaction_uses_tenant_token(monkeypatch) -> None:
     assert call["json"] == {"reaction_type": {"emoji_type": "SALUTE"}}
 
 
+def test_get_bot_open_id_accepts_legacy_bot_info_shape(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_request(method: str, url: str, **kwargs: Any) -> FakeResponse:
+        calls.append({"method": method, "url": url, **kwargs})
+        if url.endswith("/auth/v3/tenant_access_token/internal"):
+            return FakeResponse({"code": 0, "tenant_access_token": "t-test-token", "expire": 7200})
+        return FakeResponse({"code": 0, "msg": "ok", "bot": {"open_id": "ou_bot"}})
+
+    monkeypatch.setattr("fmh.feishu.httpx.request", fake_request)
+    client = FeishuOpenAPIClient(
+        FeishuConfig(
+            base_url="https://example.feishu.test/open-apis",
+            app_id="app",
+            app_secret="secret",
+        )
+    )
+
+    assert client.get_bot_open_id() == "ou_bot"
+    assert calls[-1]["method"] == "GET"
+    assert calls[-1]["url"].endswith("/bot/v3/info")
+
+
 def test_request_retries_temporary_network_errors(monkeypatch) -> None:
     calls: list[str] = []
     sleeps: list[float] = []

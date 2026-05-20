@@ -11,6 +11,7 @@ from typing import Any
 class FeishuConfig:
     app_id: str = ""
     app_secret: str = ""
+    bot_open_id: str = ""
     user_access_token: str = ""
     verification_token: str = ""
     base_url: str = "https://open.feishu.cn/open-apis"
@@ -200,6 +201,8 @@ def _apply_env_overrides(config: AppConfig) -> AppConfig:
         feishu = replace(feishu, app_id=os.environ["FEISHU_APP_ID"])
     if os.getenv("FEISHU_APP_SECRET"):
         feishu = replace(feishu, app_secret=os.environ["FEISHU_APP_SECRET"])
+    if os.getenv("FEISHU_BOT_OPEN_ID"):
+        feishu = replace(feishu, bot_open_id=os.environ["FEISHU_BOT_OPEN_ID"])
     if os.getenv("FEISHU_USER_ACCESS_TOKEN"):
         feishu = replace(feishu, user_access_token=os.environ["FEISHU_USER_ACCESS_TOKEN"])
     if os.getenv("FEISHU_VERIFICATION_TOKEN"):

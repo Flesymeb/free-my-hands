@@ -79,6 +79,9 @@ class PollingFeishuClient(Protocol):
     def add_message_reaction(self, message_id: str, emoji_type: str) -> str:
         ...
 
+    def get_bot_open_id(self) -> str:
+        ...
+
 
 @dataclass(frozen=True)
 class PollStats:
@@ -114,6 +117,8 @@ class FeishuPollingWorker:
         self.orchestrator = orchestrator
         self._discovered_chat_ids: list[str] = []
         self._discovered_chat_ids_at = 0
+        self._bot_open_id = self.config.feishu.bot_open_id.strip()
+        self._bot_open_id_checked = bool(self._bot_open_id)
 
     def run_forever(self) -> None:
         log.info("polling started: interval=%ss", self.config.polling.interval_sec)
@@ -271,7 +276,7 @@ class FeishuPollingWorker:
             self.store.mark_processed_item(source_key, msg_id, "ignored", summary="interactive card payload")
             return PollStats(scanned=1, ignored=1)
 
-        if _mentions_current_bot(item, text, self.config.feishu.app_id):
+        if _mentions_current_bot(item, text, self.config.feishu.app_id, self._current_bot_open_id()):
             self._react_to_detected_task(msg_id)
 
         control = _parse_codex_control_command(text)
@@ -844,6 +849,16 @@ class FeishuPollingWorker:
         self._discovered_chat_ids_at = now
         return chat_ids
 
+    def _current_bot_open_id(self) -> str:
+        if self._bot_open_id or self._bot_open_id_checked:
+            return self._bot_open_id
+        self._bot_open_id_checked = True
+        try:
+            self._bot_open_id = self.feishu.get_bot_open_id().strip()
+        except Exception:
+            log.exception("failed to resolve Feishu bot open_id")
+        return self._bot_open_id
+
     def _create_reuse_review(
         self,
         entry: dict[str, Any],
@@ -1103,19 +1118,19 @@ def _contains_at_mention(text: str) -> bool:
     return bool(re.search(r"<at\b", text, flags=re.IGNORECASE) or re.search(r"(^|\s)@\S+", text))
 
 
-def _mentions_current_bot(item: dict[str, Any], text: str, app_id: str) -> bool:
+def _mentions_current_bot(item: dict[str, Any], text: str, app_id: str, bot_open_id: str = "") -> bool:
     if not _contains_at_mention(text):
         return False
-    app_id = app_id.strip()
+    current_ids = {value.strip() for value in (app_id, bot_open_id) if value.strip()}
     mentions = _message_mentions(item)
-    if app_id:
+    if current_ids:
         for mention in mentions:
             mentioned_id = str(mention.get("id") or mention.get("app_id") or mention.get("user_id") or "").strip()
             id_type = str(mention.get("id_type") or mention.get("type") or "").lower()
-            if mentioned_id == app_id or (id_type == "app_id" and mentioned_id == app_id):
+            if mentioned_id in current_ids or (id_type in {"app_id", "open_id"} and mentioned_id in current_ids):
                 return True
         text_mention_ids = _at_tag_ids(text)
-        if app_id in text_mention_ids:
+        if current_ids.intersection(text_mention_ids):
             return True
         if mentions or text_mention_ids:
             return False
