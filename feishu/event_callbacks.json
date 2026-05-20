@@ -1,0 +1,100 @@
+{
+  "callback_endpoint": {
+    "method": "POST",
+    "path": "/webhooks/feishu",
+    "handler": "src/fmh/app.py:create_app",
+    "verification": "url_verification"
+  },
+  "events": [
+    {
+      "event_key": "im.message.receive_v1",
+      "event_name": "接收消息",
+      "version": "v2.0",
+      "subscription_type": "应用身份",
+      "enabled": true,
+      "purpose": [
+        "接收群聊任务分享和 @bot 手动触发消息",
+        "接收用户发给机器人的单聊部署消息",
+        "允许其他 bot @ 当前 bot 后触发检查"
+      ],
+      "required_permissions_any_of": [
+        {
+          "scope": "im:message.group_at_msg:readonly",
+          "name": "获取群组中用户@机器人消息"
+        },
+        {
+          "scope": "im:message.p2p_msg:readonly",
+          "name": "读取用户发给机器人的单聊消息"
+        },
+        {
+          "scope": "im:message.group_at_msg.include_bot:readonly",
+          "name": "获取群组中其他机器人和用户@当前机器人的消息"
+        },
+        {
+          "scope": "im:message.group_msg",
+          "name": "获取群组中所有消息（敏感权限）"
+        }
+      ]
+    },
+    {
+      "event_key": "task.task.comment.updated_v1",
+      "event_name": "任务评论信息变更",
+      "version": "v2.0",
+      "subscription_type": "应用身份",
+      "enabled": true,
+      "purpose": [
+        "任务评论变更后可唤醒任务重扫或人工状态同步"
+      ],
+      "required_permissions_any_of": [
+        {
+          "scope": "task:comment",
+          "name": "查看、创建、修改、删除任务评论（旧版）"
+        }
+      ]
+    },
+    {
+      "event_key": "task.task.update_user_access_v2",
+      "event_name": "任务更新事件",
+      "version": "v2.0",
+      "subscription_type": "应用身份",
+      "enabled": true,
+      "purpose": [
+        "任务自身更新后可唤醒任务重扫，减少轮询等待"
+      ],
+      "required_permissions_any_of": [
+        {
+          "scope": "task:task:read",
+          "name": "查看任务信息"
+        }
+      ]
+    },
+    {
+      "event_key": "task.task.updated_v1",
+      "event_name": "任务信息变更",
+      "version": "v2.0",
+      "subscription_type": "应用身份",
+      "enabled": true,
+      "purpose": [
+        "父任务或子任务更新后可唤醒任务重扫，处理新增/修改的模型路径"
+      ],
+      "required_permissions_any_of": [
+        {
+          "scope": "task:task:read",
+          "name": "查看任务信息"
+        },
+        {
+          "scope": "task:task",
+          "name": "查看、创建、更新、删除任务"
+        },
+        {
+          "scope": "task:task",
+          "name": "查看、创建、编辑和删除任务（旧版）"
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "无公网回调地址时仍可使用 polling 模式；该文件用于记录飞书事件订阅配置。",
+    "卡片按钮回调也走同一个 /webhooks/feishu endpoint。"
+  ]
+}

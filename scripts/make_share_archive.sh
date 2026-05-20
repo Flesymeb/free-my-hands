@@ -18,6 +18,7 @@ tar -C "$ROOT_DIR" \
   config.example.toml \
   .gitignore \
   docs \
+  feishu \
   scripts/start_fmh_tmux.sh \
   scripts/make_share_archive.sh \
   src \

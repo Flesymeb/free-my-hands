@@ -56,6 +56,8 @@ pytest -q
 - Tune `[reusable_workers].max_parallel_deployments` to control concurrent deployments.
 - Configure human fallback mentions under `[approval]`; do not hard-code names in code.
 - Configure follow-up bot notification under `[post_deploy_notify]`.
+- Feishu setup references: [permissions](feishu/permissions.json) and
+  [event callbacks](feishu/event_callbacks.json).
 
 ## Sharing
 

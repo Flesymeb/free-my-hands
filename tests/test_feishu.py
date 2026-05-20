@@ -6,7 +6,8 @@ import httpx
 import pytest
 
 from fmh.config import FeishuConfig, load_config
-from fmh.feishu import FeishuAuthError, FeishuOpenAPIClient
+from fmh.feishu import FeishuAuthError, FeishuEventNormalizer, FeishuOpenAPIClient
+from fmh.models import SourceType
 
 
 class FakeResponse:
@@ -20,6 +21,35 @@ class FakeResponse:
 
     def json(self) -> dict[str, Any]:
         return self._data
+
+
+def test_normalizer_accepts_message_receive_v1_payload() -> None:
+    source = FeishuEventNormalizer().normalize(
+        {
+            "schema": "2.0",
+            "header": {
+                "event_type": "im.message.receive_v1",
+                "token": "verification-token",
+            },
+            "event": {
+                "sender": {
+                    "sender_id": {"open_id": "ou_sender"},
+                    "sender_name": "sender",
+                },
+                "message": {
+                    "message_id": "om_message",
+                    "chat_id": "oc_chat",
+                    "message_type": "text",
+                    "content": "{\"text\":\"deploy_vllm\\nweight_path: /mnt/models/demo\"}",
+                },
+            },
+        }
+    )
+
+    assert source.source_type == SourceType.GROUP_MESSAGE
+    assert source.source_ref == "om_message"
+    assert source.requester.user_id == "ou_sender"
+    assert source.text == "deploy_vllm\nweight_path: /mnt/models/demo"
 
 
 def test_complete_task_uses_user_access_token(monkeypatch) -> None:
