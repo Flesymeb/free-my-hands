@@ -29,6 +29,7 @@ class FakeFeishuClient:
         self.chat_texts: list[tuple[str, str]] = []
         self.patched_cards: list[tuple[str, dict[str, Any]]] = []
         self.reactions: list[tuple[str, str]] = []
+        self.requested_tasks: list[str] = []
         self._message_counter = 0
 
     def list_messages(
@@ -57,6 +58,7 @@ class FakeFeishuClient:
         return self.doc_markdown
 
     def get_task(self, task_guid: str) -> dict[str, Any]:
+        self.requested_tasks.append(task_guid)
         return self.task
 
     def list_subtasks(self, task_guid: str, page_size: int = 50) -> list[dict[str, Any]]:
@@ -312,6 +314,44 @@ def test_manual_at_command_reports_no_new_tasks(tmp_path) -> None:
     assert stats.ignored == 1
     assert store.get_processed_item("chat:oc_1", "om_at")["status"] == "manual_poll"
     assert fake.chat_texts[-1] == ("om_at", "目前无新任务")
+
+
+def test_manual_at_command_limits_known_task_rescan(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_at",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+                "body": {"content": '{"text":"@模型部署bot 检测任务"}'},
+            }
+        ],
+        task={"guid": "task", "summary": "deploy batch"},
+        subtasks=[],
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(
+            chat_ids=["oc_1"],
+            notify_chat_on_accept=True,
+            manual_poll_lookback_sec=600,
+            known_todo_max_per_tick=1,
+        ),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    store.mark_processed_item("todo:task_a", "task_a:sub_a:/mnt/models/a", "deployed")
+    store.mark_processed_item("todo:task_b", "task_b:sub_b:/mnt/models/b", "deployed")
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    worker.poll_once()
+
+    assert len(fake.requested_tasks) == 1
 
 
 def test_polling_known_todo_task_treats_changed_subtask_as_new_card(tmp_path) -> None:

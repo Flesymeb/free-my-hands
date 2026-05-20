@@ -83,6 +83,7 @@ class PollStats:
     submitted: int = 0
     ignored: int = 0
     failed: int = 0
+    manual_polls: int = 0
 
     def add(self, other: "PollStats") -> "PollStats":
         return PollStats(
@@ -90,6 +91,7 @@ class PollStats:
             submitted=self.submitted + other.submitted,
             ignored=self.ignored + other.ignored,
             failed=self.failed + other.failed,
+            manual_polls=self.manual_polls + other.manual_polls,
         )
 
 
@@ -128,7 +130,11 @@ class FeishuPollingWorker:
             stats = stats.add(self._poll_chat(chat_id, lookback_sec=lookback_sec))
         for document_id in self.config.polling.document_ids:
             stats = stats.add(self._poll_document(document_id))
-        if self.config.polling.deploy_todo_subtasks and self.config.polling.watch_known_todo_tasks:
+        if (
+            self.config.polling.deploy_todo_subtasks
+            and self.config.polling.watch_known_todo_tasks
+            and not stats.manual_polls
+        ):
             stats = stats.add(self._poll_known_todo_tasks(force=lookback_sec is not None))
         return stats
 
@@ -202,7 +208,7 @@ class FeishuPollingWorker:
         max_per_tick = max(0, int(self.config.polling.known_todo_max_per_tick))
         interval = max(0, int(self.config.polling.known_todo_check_interval_sec))
         for task_id in self.store.list_todo_task_ids():
-            if not force and max_per_tick and checked >= max_per_tick:
+            if max_per_tick and checked >= max_per_tick:
                 break
             task_key = f"todo:{task_id}"
             due_retry = self._task_has_due_retry(task_key, now)
@@ -685,6 +691,7 @@ class FeishuPollingWorker:
             submitted=stats.submitted,
             ignored=0 if stats.submitted or stats.failed else 1,
             failed=stats.failed,
+            manual_polls=1,
         )
 
     def _handle_parse_failure(
