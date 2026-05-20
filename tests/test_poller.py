@@ -442,6 +442,95 @@ def test_at_bot_command_uses_configured_bot_open_id_without_lookup(tmp_path) -> 
     assert fake.bot_open_id_calls == 0
 
 
+def test_at_only_command_returns_help_card(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_at_only",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+                "body": {"content": '{"text":"@_user_1"}'},
+                "mentions": [{"id": "ou_bot", "id_type": "open_id", "key": "@_user_1", "name": "模型部署bot"}],
+            }
+        ]
+    )
+    config = AppConfig(
+        feishu=FeishuConfig(app_id="cli_bot"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    stats = worker.poll_once()
+
+    assert stats.submitted == 0
+    assert store.get_processed_item("chat:oc_1", "om_at_only")["status"] == "help"
+    assert fake.reactions == [("om_at_only", "SALUTE")]
+    assert fake.chat_texts[-1] == ("om_at_only", "可用指令")
+    rendered = json.dumps(fake.sent_cards[-1], ensure_ascii=False)
+    assert "检测任务" in rendered
+    assert "检测节点" in rendered
+    assert "codex on/off/status" in rendered
+
+
+def test_node_status_command_reports_worker_counts(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    markdown = """<table><tbody>
+<tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>
+<tr><td></td><td></td><td>192\\.0\\.2\\.10（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>old/finished</td><td>finished</td><td>192\\.0\\.2\\.11（4卡）</td><td></td><td></td><td></td><td>tau2<br/>vita</td><td></td></tr>
+<tr><td>old/running</td><td>running</td><td>192\\.0\\.2\\.12（4卡）</td><td></td><td></td><td></td><td>tau2<br/>vita\\(running\\)</td><td></td></tr>
+<tr><td>fresh/model</td><td>model</td><td>192\\.0\\.2\\.13（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>partial/model</td><td>partial</td><td>192\\.0\\.2\\.14（4卡）</td><td></td><td></td><td></td><td>tau2</td><td></td></tr>
+</tbody></table>"""
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_nodes",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+                "body": {"content": '{"text":"@_user_1 检测节点"}'},
+                "mentions": [{"id": "ou_bot", "id_type": "open_id", "key": "@_user_1", "name": "模型部署bot"}],
+            }
+        ],
+        doc_markdown=markdown,
+    )
+    config = AppConfig(
+        feishu=FeishuConfig(app_id="cli_bot"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True),
+        reusable_workers=ReusableWorkersConfig(deployed_models_doc_token="doc_token"),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    worker.poll_once()
+
+    assert store.get_processed_item("chat:oc_1", "om_nodes")["status"] == "node_status"
+    assert fake.reactions == [("om_nodes", "SALUTE")]
+    assert fake.chat_texts[-1] == ("om_nodes", "节点状态")
+    rendered = json.dumps(fake.sent_cards[-1], ensure_ascii=False)
+    assert "可用节点" in rendered
+    assert "2" in rendered
+    assert "运行中 1" in rendered
+    assert "待测试 1" in rendered
+    assert "测试未完成 1" in rendered
+    assert "192.0.2.10" in rendered
+    assert "192.0.2.14" in rendered
+
+
 def test_polling_auto_discovers_joined_chats(tmp_path) -> None:
     now_ms = int(time.time()) * 1000
     fake = FakeFeishuClient(

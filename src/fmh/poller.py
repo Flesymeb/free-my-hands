@@ -276,12 +276,17 @@ class FeishuPollingWorker:
             self.store.mark_processed_item(source_key, msg_id, "ignored", summary="interactive card payload")
             return PollStats(scanned=1, ignored=1)
 
-        if _mentions_current_bot(item, text, self.config.feishu.app_id, self._current_bot_open_id()):
+        mentions_current_bot = _mentions_current_bot(item, text, self.config.feishu.app_id, self._current_bot_open_id())
+        if mentions_current_bot:
             self._react_to_detected_task(msg_id)
 
         control = _parse_codex_control_command(text)
         if control is not None:
             return self._handle_codex_control_command(chat_id, source_key, msg_id, control)
+        if _parse_help_command(text, mentions_current_bot=mentions_current_bot):
+            return self._handle_help_command(chat_id, source_key, msg_id)
+        if _parse_node_status_command(text):
+            return self._handle_node_status_command(chat_id, source_key, msg_id)
         if _parse_manual_poll_command(text):
             return self._handle_manual_poll_command(chat_id, source_key, msg_id)
 
@@ -673,6 +678,51 @@ class FeishuPollingWorker:
                 f"Codex 审核已{state}",
             )
         return PollStats(scanned=1, submitted=1)
+
+    def _handle_help_command(self, chat_id: str, source_key: str, msg_id: str) -> PollStats:
+        self.store.mark_processed_item(source_key, msg_id, "help", summary="help requested")
+        if chat_id and self.config.polling.notify_chat_on_accept:
+            self._send_chat_card_or_text(
+                chat_id,
+                _help_card(),
+                "可用指令：检测任务、检测节点、Codex 开关、重试/取消。",
+                reply_to_message_id=msg_id,
+            )
+        return PollStats(scanned=1, ignored=1)
+
+    def _handle_node_status_command(self, chat_id: str, source_key: str, msg_id: str) -> PollStats:
+        self.store.mark_processed_item(source_key, msg_id, "node_status", summary="node status requested")
+        if not chat_id or not self.config.polling.notify_chat_on_accept:
+            return PollStats(scanned=1, ignored=1)
+
+        doc_token = self.config.reusable_workers.deployed_models_doc_token.strip()
+        if not doc_token:
+            self._send_chat_card_or_text(
+                chat_id,
+                _status_card("节点检测失败", "red", {"原因": "未配置已部署模型文档 token"}),
+                "节点检测失败：未配置已部署模型文档 token",
+                reply_to_message_id=msg_id,
+            )
+            return PollStats(scanned=1, failed=1)
+        try:
+            content = self.feishu.get_doc_markdown(doc_token)
+            rows = parse_deployed_models_table(content)
+        except Exception as exc:
+            self._send_chat_card_or_text(
+                chat_id,
+                _status_card("节点检测失败", "red", {"原因": _short_text(str(exc), 180)}),
+                f"节点检测失败：{exc}",
+                reply_to_message_id=msg_id,
+            )
+            return PollStats(scanned=1, failed=1)
+
+        self._send_chat_card_or_text(
+            chat_id,
+            _node_status_card(rows, self.config.reusable_workers),
+            _node_status_fallback(rows, self.config.reusable_workers),
+            reply_to_message_id=msg_id,
+        )
+        return PollStats(scanned=1, ignored=1)
 
     def _handle_manual_poll_command(self, chat_id: str, source_key: str, msg_id: str) -> PollStats:
         self.store.mark_processed_item(source_key, msg_id, "manual_poll", summary="manual poll requested")
@@ -1078,10 +1128,35 @@ def _parse_codex_control_command(text: str) -> str | None:
     return mapping.get(stripped)
 
 
+def _parse_help_command(text: str, *, mentions_current_bot: bool = False) -> bool:
+    stripped = _manual_command_text(text)
+    if mentions_current_bot and not stripped:
+        return True
+    if not mentions_current_bot:
+        return False
+    return stripped in {"help", "?", "帮助", "指令", "命令", "可用指令", "使用帮助"}
+
+
+def _parse_node_status_command(text: str) -> bool:
+    stripped = _manual_command_text(text)
+    return stripped in {
+        "nodes",
+        "node status",
+        "workers",
+        "worker status",
+        "检测节点",
+        "检查节点",
+        "节点状态",
+        "查看节点",
+        "查看节点状态",
+        "检测worker",
+        "检查worker",
+        "worker状态",
+    }
+
+
 def _parse_manual_poll_command(text: str) -> bool:
     stripped = _manual_command_text(text)
-    if _contains_at_mention(text) and not stripped:
-        return True
     commands = {
         "poll",
         "poll now",
@@ -1595,6 +1670,122 @@ def _todo_accept_card(count: int, request_ids: list[str], *, review_mode: bool =
     return _status_card("已接收任务子项部署", "blue", fields)
 
 
+def _help_card() -> dict[str, Any]:
+    command_lines = [
+        "**检测任务** · 扫描最近任务分享和已跟踪子任务",
+        "**检测节点** · 查看已部署模型文档里的 worker 可用情况",
+        "**codex on/off/status** · 开关或查看 Codex 审核",
+        "**回复卡片：重试 / 取消** · 处理失败部署",
+    ]
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "可用指令"},
+            "template": "blue",
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": "\n".join(command_lines)},
+            },
+            {
+                "tag": "note",
+                "elements": [
+                    {
+                        "tag": "plain_text",
+                        "content": "建议在群里 @bot 后发送指令，回复会留在当前群。",
+                    }
+                ],
+            },
+        ],
+    }
+
+
+def _node_status_card(rows: list[Any], config: Any) -> dict[str, Any]:
+    counts = _node_status_counts(rows, config)
+    available = counts["idle"] + counts["reusable"]
+    valid_total = max(0, len(rows) - counts["invalid"])
+    color = "green" if available else "orange" if rows else "red"
+    summary_parts = [
+        f"**可用节点** {_tag(str(available), 'green' if available else 'grey')}",
+        f"**总节点** {valid_total}",
+    ]
+    if counts["running"]:
+        summary_parts.append(f"运行中 {counts['running']}")
+    if counts["fresh"]:
+        summary_parts.append(f"待测试 {counts['fresh']}")
+    if counts["partial"]:
+        summary_parts.append(f"测试未完成 {counts['partial']}")
+    if counts["invalid"]:
+        summary_parts.append(f"配置异常 {counts['invalid']}")
+    if not rows:
+        detail = "未从已部署模型文档解析到节点表。"
+    else:
+        lines = [_node_status_line(row, config) for row in rows[:30]]
+        if len(rows) > 30:
+            lines.append(f"还有 {len(rows) - 30} 个节点未显示。")
+        detail = "**节点明细**\n" + "\n".join(lines)
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "节点状态"},
+            "template": color,
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": " · ".join(summary_parts)},
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": detail},
+            },
+        ],
+    }
+
+
+def _node_status_fallback(rows: list[Any], config: Any) -> str:
+    counts = _node_status_counts(rows, config)
+    available = counts["idle"] + counts["reusable"]
+    return f"节点状态：可用 {available} / 总节点 {max(0, len(rows) - counts['invalid'])}"
+
+
+def _node_status_counts(rows: list[Any], config: Any) -> dict[str, int]:
+    counts = {"idle": 0, "reusable": 0, "running": 0, "fresh": 0, "partial": 0, "invalid": 0}
+    for row in rows:
+        key, _, _, _ = _node_row_status(row, config)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _node_status_line(row: Any, config: Any) -> str:
+    _, label, color, detail = _node_row_status(row, config)
+    ip = str(getattr(row, "ip", "") or "").strip()
+    gpu_count = int(getattr(row, "gpu_count", 0) or 0)
+    address = f"{ip} ({gpu_count}卡)" if ip and gpu_count else _short_text(str(getattr(row, "address", "") or "地址缺失"), 32)
+    model_id = str(getattr(row, "model_id", "") or "").strip()
+    if not model_id:
+        model_id = _short_text(str(getattr(row, "model", "") or "-"), 42)
+    return f"{_tag(label, color)} {_md_escape(address)} · {_md_escape(_short_text(model_id or '-', 42))} · {_md_escape(detail)}"
+
+
+def _node_row_status(row: Any, config: Any) -> tuple[str, str, str, str]:
+    ip = str(getattr(row, "ip", "") or "").strip()
+    gpu_count = int(getattr(row, "gpu_count", 0) or 0)
+    if not ip or gpu_count <= 0:
+        return "invalid", "配置异常", "red", "地址或卡数缺失"
+    if row.has_running_marker(config.running_marker):
+        return "running", "运行中", "blue", "含 running 标记"
+    if row.is_idle_empty():
+        return "idle", "空闲", "green", "空行可用"
+    if row.is_reusable(config):
+        finished = "/".join(str(task).strip() for task in config.required_finished_tasks if str(task).strip())
+        return "reusable", "可复用", "green", f"已完成 {finished}" if finished else "已测试完成"
+    if row.is_fresh_untested():
+        return "fresh", "待测试", "orange", "新部署未测试"
+    return "partial", "测试未完成", "grey", _short_text(str(getattr(row, "tested_tasks", "") or "未满足 required tasks"), 48)
+
+
 def _manual_poll_result_card(
     title: str,
     color: str,
@@ -1662,6 +1853,17 @@ def _short_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 1)] + "…"
+
+
+def _tag(text: str, color: str) -> str:
+    return f"<text_tag color='{color}'>{_md_escape(text)}</text_tag>"
+
+
+def _md_escape(value: str) -> str:
+    escaped = str(value).replace("\\", "\\\\")
+    for char in ("*", "_", "~", "`", "[", "]", "(", ")"):
+        escaped = escaped.replace(char, "\\" + char)
+    return escaped
 
 
 def _recent_task_status_lines(store: StateStore, *, limit: int = 3) -> tuple[str, ...]:
