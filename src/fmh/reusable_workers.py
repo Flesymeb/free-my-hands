@@ -46,6 +46,9 @@ class DeployedModelRow:
     def has_running_marker(self, marker: str) -> bool:
         return tested_tasks_has_running_marker(self.tested_tasks, marker)
 
+    def has_blocked_marker(self, marker: str) -> bool:
+        return tested_tasks_has_blocked_marker(self.tested_tasks, marker)
+
     def has_finished_tasks(self, required_tasks: list[str]) -> bool:
         return tested_tasks_has_finished_tasks(self.tested_tasks, required_tasks)
 
@@ -208,6 +211,16 @@ def tested_tasks_has_running_marker(tested_tasks: str, marker: str) -> bool:
     return bool(re.search(r"\(\s*running\s*\)", text, flags=re.IGNORECASE))
 
 
+def tested_tasks_has_blocked_marker(tested_tasks: str, marker: str) -> bool:
+    text = normalize_tested_tasks(tested_tasks)
+    marker_text = normalize_tested_tasks(marker)
+    compact_text = re.sub(r"\s+", "", text).lower()
+    compact_marker = re.sub(r"\s+", "", marker_text).lower()
+    if compact_marker and compact_marker in compact_text:
+        return True
+    return bool(re.search(r"\(\s*blocked\s*\)", text, flags=re.IGNORECASE))
+
+
 def tested_tasks_has_finished_tasks(tested_tasks: str, required_tasks: list[str]) -> bool:
     tokens = set(re.findall(r"[a-z0-9][a-z0-9_.-]*", normalize_tested_tasks(tested_tasks).lower()))
     return all(str(task).strip().lower() in tokens for task in required_tasks if str(task).strip())
@@ -223,6 +236,8 @@ def is_reusable_worker_state(
     model_id_text = str(model_id or "").strip()
     tested_text = str(tested_tasks or "").strip()
     if tested_tasks_has_running_marker(tested_text, config.running_marker):
+        return False
+    if tested_tasks_has_blocked_marker(tested_text, config.blocked_marker):
         return False
     has_model = bool(model_text or model_id_text)
     if not has_model and not tested_text:

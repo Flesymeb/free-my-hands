@@ -74,6 +74,9 @@ def test_reusable_worker_selection_covers_idle_finished_running_and_fresh_rows()
         ("tau2\nvita\\(running\\)", False),
         ("tau2\nvita（running）", False),
         ("tau2\nvita ( running )", False),
+        ("tau2(blocked)\nvita(blocked)", False),
+        ("tau2\nvita（blocked）", False),
+        ("tau2\nvita ( blocked )", False),
         ("tau20\nvitamin", False),
     ],
 )
@@ -96,14 +99,15 @@ def test_reusable_worker_selection_skips_marker_variants_and_task_name_false_pos
 <tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>
 <tr><td>old/fullwidth-running</td><td>running-a</td><td>192\\.0\\.2\\.20（4卡）</td><td></td><td></td><td></td><td>tau2\nvita（running）</td><td></td></tr>
 <tr><td>old/spaced-running</td><td>running-b</td><td>192\\.0\\.2\\.21（4卡）</td><td></td><td></td><td></td><td>tau2\nvita ( running )</td><td></td></tr>
+<tr><td>old/blocked</td><td>blocked</td><td>192\\.0\\.2\\.24（4卡）</td><td></td><td></td><td></td><td>tau2(blocked)\nvita(blocked)</td><td></td></tr>
 <tr><td>old/false-positive</td><td>false-positive</td><td>192\\.0\\.2\\.22（4卡）</td><td></td><td></td><td></td><td>tau20\nvitamin</td><td></td></tr>
 <tr><td>old/finished</td><td>finished</td><td>192\\.0\\.2\\.23（4卡）</td><td></td><td></td><td></td><td>tau2\nvita</td><td></td></tr>
 </tbody></table>"""
     config = ReusableWorkersConfig()
     rows = parse_deployed_models_table(markdown)
 
-    assert [row.is_reusable(config) for row in rows] == [False, False, False, True]
-    assert choose_reusable_row(rows, config) == rows[3]
+    assert [row.is_reusable(config) for row in rows] == [False, False, False, False, True]
+    assert choose_reusable_row(rows, config) == rows[4]
 
 
 def test_reusable_worker_selection_uses_finished_row_when_no_idle_row_exists() -> None:

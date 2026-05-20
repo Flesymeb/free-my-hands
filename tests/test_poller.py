@@ -491,6 +491,7 @@ def test_node_status_command_reports_worker_counts(tmp_path) -> None:
 <tr><td></td><td></td><td>192\\.0\\.2\\.10（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>old/finished</td><td>finished</td><td>192\\.0\\.2\\.11（4卡）</td><td></td><td></td><td></td><td>tau2<br/>vita</td><td></td></tr>
 <tr><td>old/running</td><td>running</td><td>192\\.0\\.2\\.12（4卡）</td><td></td><td></td><td></td><td>tau2<br/>vita\\(running\\)</td><td></td></tr>
+<tr><td>old/blocked</td><td>blocked</td><td>192\\.0\\.2\\.15（4卡）</td><td></td><td></td><td></td><td>tau2\\(blocked\\)<br/>vita\\(blocked\\)</td><td></td></tr>
 <tr><td>fresh/model</td><td>model</td><td>192\\.0\\.2\\.13（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>partial/model</td><td>partial</td><td>192\\.0\\.2\\.14（4卡）</td><td></td><td></td><td></td><td>tau2</td><td></td></tr>
 </tbody></table>"""
@@ -529,6 +530,7 @@ def test_node_status_command_reports_worker_counts(tmp_path) -> None:
     assert "可用节点" in rendered
     assert "2" in rendered
     assert "运行中 1" in rendered
+    assert "测试失败 1" in rendered
     assert "待测试 1" in rendered
     assert "测试未完成 1" in rendered
     assert "192.0.2.10" in rendered

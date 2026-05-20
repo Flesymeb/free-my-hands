@@ -57,6 +57,7 @@ source_model_prefix = "/mnt/shared-models"
 worker_model_prefix = "/mnt/worker-models"
 table_model_prefix = "/mnt/worker-models"
 running_marker = "(running)"
+blocked_marker = "(blocked)"
 deploying_marker = "（部署中）"
 required_finished_tasks = ["tau2", "vita"]
 default_port = 8000

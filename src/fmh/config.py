@@ -93,6 +93,7 @@ class ReusableWorkersConfig:
     worker_model_prefix: str = "/mnt/worker-models"
     table_model_prefix: str = "/mnt/worker-models"
     running_marker: str = "(running)"
+    blocked_marker: str = "(blocked)"
     deploying_marker: str = "（部署中）"
     required_finished_tasks: list[str] = field(default_factory=lambda: ["tau2", "vita"])
     default_port: int = 8000

@@ -1743,6 +1743,8 @@ def _node_status_card(rows: list[Any], config: Any) -> dict[str, Any]:
     ]
     if counts["running"]:
         summary_parts.append(f"运行中 {counts['running']}")
+    if counts.get("blocked", 0):
+        summary_parts.append(f"测试失败 {counts['blocked']}")
     if counts["fresh"]:
         summary_parts.append(f"待测试 {counts['fresh']}")
     if counts["partial"]:
@@ -1782,7 +1784,7 @@ def _node_status_fallback(rows: list[Any], config: Any) -> str:
 
 
 def _node_status_counts(rows: list[Any], config: Any) -> dict[str, int]:
-    counts = {"idle": 0, "reusable": 0, "running": 0, "fresh": 0, "partial": 0, "invalid": 0}
+    counts = {"idle": 0, "reusable": 0, "running": 0, "blocked": 0, "fresh": 0, "partial": 0, "invalid": 0}
     for row in rows:
         key, _, _, _ = _node_row_status(row, config)
         counts[key] = counts.get(key, 0) + 1
@@ -1807,6 +1809,8 @@ def _node_row_status(row: Any, config: Any) -> tuple[str, str, str, str]:
         return "invalid", "配置异常", "red", "地址或卡数缺失"
     if row.has_running_marker(config.running_marker):
         return "running", "运行中", "blue", "含 running 标记"
+    if row.has_blocked_marker(config.blocked_marker):
+        return "blocked", "测试失败", "red", "含 blocked 标记"
     if row.is_idle_empty():
         return "idle", "空闲", "green", "空行可用"
     if row.is_reusable(config):
