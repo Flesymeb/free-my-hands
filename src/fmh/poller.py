@@ -117,6 +117,7 @@ class FeishuPollingWorker:
         self.orchestrator = orchestrator
         self._discovered_chat_ids: list[str] = []
         self._discovered_chat_ids_at = 0
+        self._suppressed_chat_ids: dict[str, int] = {}
         self._bot_open_id = self.config.feishu.bot_open_id.strip()
         self._bot_open_id_checked = bool(self._bot_open_id)
 
@@ -139,7 +140,15 @@ class FeishuPollingWorker:
     def poll_once(self, *, lookback_sec: int | None = None) -> PollStats:
         stats = PollStats()
         for chat_id in self._chat_ids():
-            stats = stats.add(self._poll_chat(chat_id, lookback_sec=lookback_sec))
+            try:
+                stats = stats.add(self._poll_chat(chat_id, lookback_sec=lookback_sec))
+            except Exception as exc:
+                if _is_out_of_chat_error(exc):
+                    self._suppress_chat(chat_id)
+                    log.warning("skipping Feishu chat outside bot membership: %s", _redact_chat_id(chat_id))
+                    continue
+                log.exception("failed to poll Feishu chat: %s", _redact_chat_id(chat_id))
+                stats = stats.add(PollStats(failed=1))
         for document_id in self.config.polling.document_ids:
             stats = stats.add(self._poll_document(document_id))
         if (
@@ -871,13 +880,13 @@ class FeishuPollingWorker:
     def _chat_ids(self) -> list[str]:
         configured = [chat_id for chat_id in self.config.polling.chat_ids if chat_id]
         if configured:
-            return configured
+            return self._filter_suppressed_chat_ids(configured)
         if self.config.polling.auto_discover_chats:
             discovered = self._auto_discovered_chat_ids()
             if discovered:
-                return discovered
+                return self._filter_suppressed_chat_ids(discovered)
         if self.config.feishu.default_chat_id:
-            return [self.config.feishu.default_chat_id]
+            return self._filter_suppressed_chat_ids([self.config.feishu.default_chat_id])
         return []
 
     def _auto_discovered_chat_ids(self) -> list[str]:
@@ -892,12 +901,23 @@ class FeishuPollingWorker:
             return self._discovered_chat_ids
         chat_ids = []
         for chat in chats:
+            if str(chat.get("chat_status") or "normal").lower() not in {"", "normal"}:
+                continue
             chat_id = str(chat.get("chat_id") or "").strip()
             if chat_id and chat_id not in chat_ids:
                 chat_ids.append(chat_id)
         self._discovered_chat_ids = chat_ids
         self._discovered_chat_ids_at = now
         return chat_ids
+
+    def _filter_suppressed_chat_ids(self, chat_ids: list[str]) -> list[str]:
+        now = int(time.time())
+        return [chat_id for chat_id in chat_ids if int(self._suppressed_chat_ids.get(chat_id, 0)) <= now]
+
+    def _suppress_chat(self, chat_id: str) -> None:
+        until = int(time.time()) + max(60, int(self.config.polling.chat_discovery_interval_sec))
+        self._suppressed_chat_ids[chat_id] = until
+        self._discovered_chat_ids = [value for value in self._discovered_chat_ids if value != chat_id]
 
     def _current_bot_open_id(self) -> str:
         if self._bot_open_id or self._bot_open_id_checked:
@@ -1624,6 +1644,17 @@ def _known_todo_checked_key(task_id: str) -> str:
 
 def _is_no_reusable_worker_error(exc: Exception) -> bool:
     return "no reusable deployed-model row is available" in str(exc)
+
+
+def _is_out_of_chat_error(exc: Exception) -> bool:
+    text = str(exc)
+    return "code=230002" in text or "can NOT be out of the chat" in text
+
+
+def _redact_chat_id(chat_id: str) -> str:
+    if len(chat_id) <= 10:
+        return chat_id
+    return f"{chat_id[:6]}…{chat_id[-4:]}"
 
 
 def _safe_int(value: object) -> int:

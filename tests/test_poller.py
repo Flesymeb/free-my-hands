@@ -23,12 +23,14 @@ class FakeFeishuClient:
         subtasks: list[dict[str, Any]] | None = None,
         doc_markdown: str = "",
         chats: list[dict[str, Any]] | None = None,
+        message_errors_by_chat: dict[str, Exception] | None = None,
     ) -> None:
         self.messages = messages
         self.task = task or {}
         self.subtasks = subtasks or []
         self.doc_markdown = doc_markdown
         self.chats = chats or []
+        self.message_errors_by_chat = message_errors_by_chat or {}
         self.chat_texts: list[tuple[str, str]] = []
         self.sent_cards: list[dict[str, Any]] = []
         self.patched_cards: list[tuple[str, dict[str, Any]]] = []
@@ -56,6 +58,8 @@ class FakeFeishuClient:
         sort_type: str = "ByCreateTimeAsc",
     ) -> list[dict[str, Any]]:
         self.polled_chat_ids.append(chat_id)
+        if chat_id in self.message_errors_by_chat:
+            raise self.message_errors_by_chat[chat_id]
         out = []
         for message in self.messages:
             ts = int(message["create_time"]) // 1000
@@ -560,6 +564,49 @@ def test_polling_auto_discovers_joined_chats(tmp_path) -> None:
     worker.poll_once()
 
     assert fake.polled_chat_ids == ["oc_a", "oc_b"]
+
+
+def test_polling_skips_chat_outside_bot_membership_without_blocking_other_chats(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_good",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+                "body": {"content": '{"text":"hello"}'},
+            }
+        ],
+        chats=[
+            {"chat_id": "oc_bad", "name": "removed", "chat_status": "normal"},
+            {"chat_id": "oc_good", "name": "current", "chat_status": "normal"},
+            {"chat_id": "oc_deleted", "name": "deleted", "chat_status": "dismissed"},
+        ],
+        message_errors_by_chat={
+            "oc_bad": RuntimeError("Feishu HTTP 400: code=230002, msg=Bot/User can NOT be out of the chat.")
+        },
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(auto_discover_chats=True),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_bad", str((now_ms // 1000) - 10))
+    store.set_cursor("chat:oc_good", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    first = worker.poll_once()
+    second = worker.poll_once()
+
+    assert first.failed == 0
+    assert fake.polled_chat_ids[:2] == ["oc_bad", "oc_good"]
+    assert "oc_deleted" not in fake.polled_chat_ids
+    assert fake.polled_chat_ids == ["oc_bad", "oc_good", "oc_good"]
+    assert second.scanned == 0
 
 
 def test_manual_at_command_limits_known_task_rescan(tmp_path) -> None:
