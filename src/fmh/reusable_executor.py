@@ -466,49 +466,37 @@ class ReusableDeploymentExecutor:
         )
 
     def _send_card(self, review: dict[str, Any], decision: dict[str, Any]) -> None:
-        detail_chat_id = self.config.approval.fallback_chat_id or self.config.feishu.default_chat_id
-        if not detail_chat_id:
-            return
         payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
         context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
         reply_to = str(context.get("reply_to_message_id") or "")
         source_chat_id = str(context.get("source_chat_id") or "")
+        target_chat_id = source_chat_id or self.config.feishu.default_chat_id or self.config.approval.fallback_chat_id
+        if not target_chat_id and not reply_to:
+            return
         simple_text = _simple_status_text(review, decision)
         alert_text = _human_alert_text(self.config, review, decision)
         source_updated = self._update_task_status(review, decision)
         try:
-            if source_chat_id and source_chat_id != detail_chat_id:
-                if source_updated:
-                    pass
-                elif reply_to:
-                    self.feishu.reply_text(reply_to, simple_text)
-                else:
-                    self.feishu.send_chat_text(source_chat_id, simple_text)
-                self.feishu.send_chat_card(detail_chat_id, review_result_card(review, decision))
-                if alert_text:
-                    self.feishu.send_chat_text(detail_chat_id, alert_text)
-            elif source_updated:
+            if source_updated:
                 if alert_text:
                     if reply_to:
                         self.feishu.reply_text(reply_to, alert_text)
-                    else:
-                        self.feishu.send_chat_text(detail_chat_id, alert_text)
+                    elif target_chat_id:
+                        self.feishu.send_chat_text(target_chat_id, alert_text)
             elif reply_to:
                 self.feishu.reply_card(reply_to, review_result_card(review, decision))
                 if alert_text:
                     self.feishu.reply_text(reply_to, alert_text)
             else:
-                self.feishu.send_chat_card(detail_chat_id, review_result_card(review, decision))
+                self.feishu.send_chat_card(target_chat_id, review_result_card(review, decision))
                 if alert_text:
-                    self.feishu.send_chat_text(detail_chat_id, alert_text)
+                    self.feishu.send_chat_text(target_chat_id, alert_text)
         except Exception:
             fallback_text = alert_text or simple_text
-            if source_chat_id and source_chat_id != detail_chat_id:
-                self.feishu.send_chat_text(detail_chat_id, fallback_text)
-            elif reply_to:
+            if reply_to:
                 self.feishu.reply_text(reply_to, fallback_text)
-            else:
-                self.feishu.send_chat_text(detail_chat_id, fallback_text)
+            elif target_chat_id:
+                self.feishu.send_chat_text(target_chat_id, fallback_text)
 
     def _update_task_status(self, review: dict[str, Any], decision: dict[str, Any]) -> bool:
         payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
@@ -657,7 +645,7 @@ class ReusableDeploymentExecutor:
         path = plan.get("path") if isinstance(plan.get("path"), dict) else {}
         row = plan.get("row") if isinstance(plan.get("row"), dict) else {}
 
-        chat_id = notify.chat_id or str(context.get("source_chat_id") or "") or self.config.feishu.default_chat_id
+        chat_id = str(context.get("source_chat_id") or "") or notify.chat_id or self.config.feishu.default_chat_id
         if not chat_id:
             return decision
 
@@ -718,8 +706,8 @@ class ReusableDeploymentExecutor:
         subtask_guid = str(context.get("subtask_guid") or "")
         if not subtask_guid:
             return decision
-        detail_chat_id = self.config.approval.fallback_chat_id or self.config.feishu.default_chat_id
-        if not detail_chat_id:
+        chat_id = str(context.get("source_chat_id") or "") or self.config.feishu.default_chat_id or self.config.approval.fallback_chat_id
+        if not chat_id:
             return decision
 
         plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
@@ -735,7 +723,7 @@ class ReusableDeploymentExecutor:
         if task_title:
             lines.append(f"来源任务: {task_title}")
         try:
-            message_id = self.feishu.send_chat_text(detail_chat_id, "\n".join(lines))
+            message_id = self.feishu.send_chat_text(chat_id, "\n".join(lines))
         except Exception as exc:
             log.exception("failed to send manual subtask completion notice")
             return {
@@ -747,7 +735,7 @@ class ReusableDeploymentExecutor:
             **decision,
             "manual_subtask_completion_notice_status": "sent",
             "manual_subtask_completion_notice_message_id": message_id,
-            "manual_subtask_completion_notice_chat_id": detail_chat_id,
+            "manual_subtask_completion_notice_chat_id": chat_id,
         }
 
 

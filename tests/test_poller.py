@@ -683,8 +683,8 @@ def test_reusable_review_notice_uses_source_chat_when_default_chat_differs(tmp_p
 
     worker._process_task_subtasks("task_source", "todo:task_source", chat_id="oc_source")  # noqa: SLF001
 
-    assert any(target == "oc_source" and text.startswith("待审核部署计划") for target, text in fake.chat_texts)
-    assert any(target == "oc_default" and text == "复用常驻 worker 部署审核" for target, text in fake.chat_texts)
+    assert any(target == "oc_source" and text == "复用常驻 worker 部署审核" for target, text in fake.chat_texts)
+    assert not any(target == "oc_default" for target, _ in fake.chat_texts)
 
 
 def test_reusable_todo_wakes_review_auditor_after_new_review(tmp_path, monkeypatch) -> None:

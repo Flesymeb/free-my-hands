@@ -131,7 +131,7 @@ def _try_send_review_result(feishu_client: Any, config: AppConfig, review: dict[
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     if context.get("status_message_id"):
         return
-    chat_id = config.approval.fallback_chat_id or config.feishu.default_chat_id
+    chat_id = str(context.get("source_chat_id") or "") or config.feishu.default_chat_id or config.approval.fallback_chat_id
     if not chat_id:
         return
     try:

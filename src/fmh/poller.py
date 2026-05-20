@@ -883,30 +883,20 @@ class FeishuPollingWorker:
         *,
         reply_to_message_id: str = "",
     ) -> None:
-        detail_chat_id = self.config.approval.fallback_chat_id or self.config.feishu.default_chat_id
+        target_chat_id = chat_id or self.config.feishu.default_chat_id or self.config.approval.fallback_chat_id
         try:
-            if detail_chat_id and chat_id and chat_id != detail_chat_id:
-                if reply_to_message_id:
-                    self.feishu.reply_text(reply_to_message_id, fallback_text)
-                else:
-                    self.feishu.send_chat_text(chat_id, fallback_text)
-                self.feishu.send_chat_card(detail_chat_id, card)
-            elif reply_to_message_id:
+            if reply_to_message_id:
                 self.feishu.reply_card(reply_to_message_id, card)
-            else:
-                self.feishu.send_chat_card(detail_chat_id or chat_id, card)
+            elif target_chat_id:
+                self.feishu.send_chat_card(target_chat_id, card)
         except Exception:
-            target_chat_id = detail_chat_id or chat_id
-            if detail_chat_id and chat_id and chat_id != detail_chat_id:
-                self.feishu.send_chat_text(detail_chat_id, fallback_text)
-            elif reply_to_message_id:
+            if reply_to_message_id:
                 self.feishu.reply_text(reply_to_message_id, fallback_text)
             elif target_chat_id:
                 self.feishu.send_chat_text(target_chat_id, fallback_text)
 
     def _send_detail_text(self, source_chat_id: str, text: str) -> None:
-        detail_chat_id = self.config.approval.fallback_chat_id or self.config.feishu.default_chat_id
-        target_chat_id = detail_chat_id or source_chat_id
+        target_chat_id = source_chat_id or self.config.feishu.default_chat_id or self.config.approval.fallback_chat_id
         if not target_chat_id:
             return
         try:

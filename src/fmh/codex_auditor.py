@@ -191,7 +191,11 @@ class CodexReviewAuditor:
             deferred_to_deploy = decision["decision"] == "APPROVE" and self.config.reusable_workers.auto_deploy_approved
             if self.config.codex_review.send_result_cards and not deferred_to_deploy:
                 updated = self.store.get_review(review_id) or review
-                self._send_card(review_result_card(updated, decision), f"审核结果: {review_id} {decision['decision']}")
+                self._send_card(
+                    review_result_card(updated, decision),
+                    f"审核结果: {review_id} {decision['decision']}",
+                    review=updated,
+                )
             if decision["decision"] == "APPROVE":
                 updated = self.store.get_review(review_id) or review
                 self.executor.execute_if_enabled(updated, decision)
@@ -223,7 +227,11 @@ class CodexReviewAuditor:
         deferred_to_deploy = decision["decision"] == "APPROVE" and self.config.reusable_workers.auto_deploy_approved
         if self.config.codex_review.send_result_cards and not deferred_to_deploy:
             updated = self.store.get_review(review_id) or review
-            self._send_card(review_result_card(updated, decision), f"Codex 审核结果: {review_id} {decision['decision']}")
+            self._send_card(
+                review_result_card(updated, decision),
+                f"Codex 审核结果: {review_id} {decision['decision']}",
+                review=updated,
+            )
         if decision["decision"] == "APPROVE":
             updated = self.store.get_review(review_id) or review
             self.executor.execute_if_enabled(updated, decision)
@@ -242,13 +250,20 @@ class CodexReviewAuditor:
         payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
         packet = ReviewPacket.from_dict(payload)
         footer = human_fallback_footer(self.config.approval, _shorten(error, 800))
-        self._send_card(review_card(packet, self.config.approval, footer=footer), f"Codex 审核失败，需要人工确认: {review_id}")
+        self._send_card(
+            review_card(packet, self.config.approval, footer=footer),
+            f"Codex 审核失败，需要人工确认: {review_id}",
+            review=updated,
+        )
         mention = mention_text(self.config.approval)
         if mention:
-            self._send_text(f"{mention} Codex 自动审核失败，需要人工确认。\nreview_id: {review_id}\n原因：{_shorten(error, 220)}")
+            self._send_text(
+                f"{mention} Codex 自动审核失败，需要人工确认。\nreview_id: {review_id}\n原因：{_shorten(error, 220)}",
+                review=updated,
+            )
 
-    def _send_card(self, card: dict[str, Any], fallback_text: str) -> None:
-        chat_id = self.config.approval.fallback_chat_id or self.config.feishu.default_chat_id
+    def _send_card(self, card: dict[str, Any], fallback_text: str, *, review: dict[str, Any] | None = None) -> None:
+        chat_id = _review_source_chat_id(review or {}) or self.config.feishu.default_chat_id or self.config.approval.fallback_chat_id
         if not chat_id:
             return
         try:
@@ -256,8 +271,8 @@ class CodexReviewAuditor:
         except Exception:
             self.feishu.send_chat_text(chat_id, fallback_text)
 
-    def _send_text(self, text: str) -> None:
-        chat_id = self.config.approval.fallback_chat_id or self.config.feishu.default_chat_id
+    def _send_text(self, text: str, *, review: dict[str, Any] | None = None) -> None:
+        chat_id = _review_source_chat_id(review or {}) or self.config.feishu.default_chat_id or self.config.approval.fallback_chat_id
         if not chat_id:
             return
         try:
@@ -446,6 +461,12 @@ def _review_worker(review: dict[str, Any]) -> str:
     if ":" in subject:
         return subject.split(":", 1)[0]
     return ""
+
+
+def _review_source_chat_id(review: dict[str, Any]) -> str:
+    payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    return str(context.get("source_chat_id") or "")
 
 
 def _auditor_prompt(base_prompt: str) -> str:

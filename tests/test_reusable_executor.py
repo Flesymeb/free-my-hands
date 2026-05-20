@@ -105,6 +105,33 @@ def test_executor_updates_source_card_and_sends_alert_for_human_case(tmp_path) -
     assert "ou_owner" in fake.reply_texts[0][1]
 
 
+def test_executor_full_card_stays_in_source_chat_when_default_differs(tmp_path) -> None:
+    fake = FakeFeishuClient()
+    config = AppConfig(
+        feishu=FeishuConfig(default_chat_id="oc_default"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        approval=ApprovalConfig(fallback_chat_id="oc_detail"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    executor = ReusableDeploymentExecutor(config, store, fake)  # type: ignore[arg-type]
+    review = _review_payload()
+    review["payload"]["context"].pop("status_message_id")  # type: ignore[index]
+    review["payload"]["context"].pop("reply_to_message_id")  # type: ignore[index]
+
+    executor._send_card(  # noqa: SLF001
+        review,
+        {
+            "decision": "APPROVE",
+            "deploy_status": "needs_human",
+            "summary": "worker has existing model",
+        },
+    )
+
+    assert fake.chat_cards
+    assert fake.chat_cards[0][0] == "oc_source"
+    assert not any(chat_id in {"oc_default", "oc_detail"} for chat_id, _ in fake.chat_cards)
+
+
 def test_executor_surfaces_document_write_failure_without_losing_deployed_state(tmp_path) -> None:
     fake = FakeFeishuClient()
     config = AppConfig(
@@ -146,7 +173,7 @@ def test_executor_surfaces_document_write_failure_without_losing_deployed_state(
 def test_executor_sends_manual_subtask_completion_notice_after_success(tmp_path) -> None:
     fake = FakeFeishuClient()
     config = AppConfig(
-        feishu=FeishuConfig(default_chat_id="oc_source"),
+        feishu=FeishuConfig(default_chat_id="oc_default"),
         storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
         approval=ApprovalConfig(fallback_mention_open_id="ou_owner", fallback_mention_name="Owner"),
     )
@@ -279,6 +306,7 @@ def test_executor_notifies_post_deploy_bot_after_success(tmp_path) -> None:
             enabled=True,
             target_open_id="ou_bot",
             target_name="eval-bot",
+            chat_id="oc_notify",
         ),
     )
     store = StateStore(config.storage.sqlite_path)
