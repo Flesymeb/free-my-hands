@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "free-my-hands"
+version = "0.1.0"
+description = "Feishu bot workflows for GPU allocation and vLLM deployment."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "httpx>=0.27",
+  "uvicorn[standard]>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+
+[project.scripts]
+fmh = "fmh.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

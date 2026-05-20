@@ -1,0 +1,125 @@
+[feishu]
+app_id = "cli_xxx"
+app_secret = "your_app_secret"
+# Optional. Used only for user-owned task completion; normal bot APIs still
+# use app_id/app_secret to fetch tenant_access_token.
+user_access_token = "u_xxx"
+verification_token = "your_verification_token"
+base_url = "https://open.feishu.cn/open-apis"
+send_notifications = false
+default_chat_id = "oc_xxx"
+
+[storage]
+sqlite_path = "data/free-my-hands.sqlite3"
+
+[polling]
+interval_sec = 20
+page_size = 50
+# Empty means use [feishu].default_chat_id if set.
+chat_ids = []
+document_ids = []
+# Default is safe: first run primes cursors and waits for new messages/docs.
+initial_lookback_sec = 0
+process_existing_on_first_run = false
+notify_chat_on_accept = true
+deploy_todo_subtasks = true
+watch_known_todo_tasks = true
+# Wake the review-auditor tmux window immediately after new reviews are created.
+wake_review_auditor_on_submit = true
+# A manual @/refresh command scans recent chat history and known task subtasks.
+manual_poll_lookback_sec = 600
+# Known-task polling catches edited/new subtasks on old task shares, but it is
+# rate-limited so old tasks do not delay new group messages.
+known_todo_check_interval_sec = 600
+known_todo_max_per_tick = 1
+# If subtasks contain relative model names like "team/model", prepend this prefix.
+relative_weight_path_prefix = ""
+max_parse_failures_before_handoff = 3
+ignore_self_messages = true
+# When no reusable worker is available, keep the subtask pending and retry later.
+reuse_plan_retry_delay_sec = 1800
+
+[reusable_workers]
+enabled = false
+auto_deploy_approved = false
+# Feishu docx/wiki node tokens for your deployed-models table and deployment guide.
+deployed_models_doc_token = "deployed_models_doc_token_xxx"
+tutorial_doc_token = "tutorial_doc_token_xxx"
+# SSH target for the development host that owns the persistent worker tmux sessions.
+dev_host = "zhangsan@dev-host.example.com"
+source_model_prefix = "/mnt/shared-models"
+worker_model_prefix = "/mnt/worker-models"
+table_model_prefix = "/mnt/worker-models"
+running_marker = "(running)"
+deploying_marker = "（部署中）"
+required_finished_tasks = ["tau2", "vita"]
+default_port = 8000
+default_tool_parser = "qwen3_coder"
+default_reasoning_parser = "qwen3"
+default_max_model_len = 262144
+default_gpu_memory_utilization = 0.90
+default_api_server_count = 4
+deploy_timeout_sec = 1800
+deploy_poll_interval_sec = 15
+# Deployments on different workers may run concurrently. Same-worker operations
+# and deployed-model document writes remain serialized by the auditor.
+max_parallel_deployments = 2
+
+[approval]
+# Where Codex failures and manual approval cards are sent. Empty means fall back
+# to [feishu].default_chat_id.
+fallback_chat_id = "oc_xxx"
+# Configure the human owner here instead of hard-coding a name in code.
+fallback_mention_open_id = "ou_zhangsan"
+fallback_mention_name = "张三"
+# Set false when running without a public Feishu callback URL; use group reply commands instead.
+allow_card_actions = false
+allow_group_commands = true
+
+[post_deploy_notify]
+# Optional. After a model is deployed and /v1/models confirms the model id,
+# mention another bot so it can run follow-up evaluation or processing.
+enabled = false
+target_open_id = "ou_eval_bot"
+target_name = "评测机器人"
+# Empty means notify in the task source chat, then fall back to default_chat_id.
+chat_id = "oc_xxx"
+# Card notification supports real @ via <at id="open_id"></at>; text template is
+# retained as fallback.
+card_enabled = true
+message_template = "<at user_id=\"{target_open_id}\">{target_name}</at> 新模型已部署，请处理。\nworker: {worker}\nmodel_id: {model_id}\nendpoint: {endpoint}"
+
+[codex_review]
+enabled = false
+# Safer default. If your Codex process needs a proxy or different flags, override this in config.local.toml.
+# command = "ccli on </dev/null >/dev/null 2>&1; codex --yolo exec --skip-git-repo-check --ignore-user-config -"
+command = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-"]
+cd = "."
+interval_sec = 10
+timeout_sec = 300
+max_output_chars = 12000
+send_result_cards = true
+runtime_toggle_key = "codex_review_enabled"
+
+[runner]
+mode = "dry-run" # dry-run | tmux
+workdir = "."
+log_dir = "logs"
+tmux_prefix = "fmh"
+
+[rlaunch]
+# Keep this empty for local dry runs. Fill it with your cluster-specific command.
+command_template = ""
+setup_commands = [
+  "source ~/.bashrc",
+  "conda activate vllm",
+]
+
+[vllm]
+host = "0.0.0.0"
+public_host = "127.0.0.1"
+port_start = 18000
+health_timeout_sec = 180
+health_interval_sec = 5
+default_extra_args = ""
+command_template = "python -m vllm.entrypoints.openai.api_server --model {weight_path} --served-model-name {model_name} --host {host} --port {port} {extra_args}"
