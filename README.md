@@ -32,6 +32,10 @@ scripts/start_fmh_tmux.sh
 tmux attach -t fmh
 ```
 
+The start script forwards standard proxy variables such as `HTTP_PROXY`,
+`HTTPS_PROXY`, and `NO_PROXY` into tmux. Keep those set if Feishu OpenAPI is
+slow or unreachable from the server directly.
+
 The main windows are:
 
 - `poll`: reads Feishu messages/tasks and creates deployment reviews.

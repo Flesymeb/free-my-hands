@@ -8,6 +8,14 @@ CONFIG_Q="$(printf '%q' "$CONFIG")"
 
 cd "$ROOT_DIR"
 
+for env_name in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy; do
+  if [[ -v "$env_name" ]]; then
+    tmux set-environment -g "$env_name" "${!env_name}"
+  else
+    tmux set-environment -gu "$env_name" 2>/dev/null || true
+  fi
+done
+
 for legacy in fmh-poll fmh-review-auditor fmh-api; do
   if tmux has-session -t "$legacy" 2>/dev/null; then
     tmux kill-session -t "$legacy"
