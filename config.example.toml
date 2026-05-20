@@ -15,8 +15,10 @@ sqlite_path = "data/free-my-hands.sqlite3"
 [polling]
 interval_sec = 20
 page_size = 50
-# Empty means use [feishu].default_chat_id if set.
+# Empty means use auto discovery when enabled, otherwise [feishu].default_chat_id.
 chat_ids = []
+auto_discover_chats = false
+chat_discovery_interval_sec = 300
 document_ids = []
 # Default is safe: first run primes cursors and waits for new messages/docs.
 initial_lookback_sec = 0
@@ -38,6 +40,8 @@ max_parse_failures_before_handoff = 3
 ignore_self_messages = true
 # When no reusable worker is available, keep the subtask pending and retry later.
 reuse_plan_retry_delay_sec = 1800
+# Emoji reaction for detected task shares and @bot task-check commands.
+task_detected_reaction_emoji = "SALUTE"
 
 [reusable_workers]
 enabled = false

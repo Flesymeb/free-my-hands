@@ -62,6 +62,8 @@ class PollingConfig:
     interval_sec: int = 20
     page_size: int = 50
     chat_ids: list[str] = field(default_factory=list)
+    auto_discover_chats: bool = False
+    chat_discovery_interval_sec: int = 300
     document_ids: list[str] = field(default_factory=list)
     initial_lookback_sec: int = 0
     process_existing_on_first_run: bool = False

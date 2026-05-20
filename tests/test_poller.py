@@ -22,17 +22,23 @@ class FakeFeishuClient:
         task: dict[str, Any] | None = None,
         subtasks: list[dict[str, Any]] | None = None,
         doc_markdown: str = "",
+        chats: list[dict[str, Any]] | None = None,
     ) -> None:
         self.messages = messages
         self.task = task or {}
         self.subtasks = subtasks or []
         self.doc_markdown = doc_markdown
+        self.chats = chats or []
         self.chat_texts: list[tuple[str, str]] = []
         self.sent_cards: list[dict[str, Any]] = []
         self.patched_cards: list[tuple[str, dict[str, Any]]] = []
         self.reactions: list[tuple[str, str]] = []
         self.requested_tasks: list[str] = []
+        self.polled_chat_ids: list[str] = []
         self._message_counter = 0
+
+    def list_chats(self, page_size: int = 50) -> list[dict[str, Any]]:
+        return self.chats
 
     def list_messages(
         self,
@@ -43,6 +49,7 @@ class FakeFeishuClient:
         page_size: int = 50,
         sort_type: str = "ByCreateTimeAsc",
     ) -> list[dict[str, Any]]:
+        self.polled_chat_ids.append(chat_id)
         out = []
         for message in self.messages:
             ts = int(message["create_time"]) // 1000
@@ -332,6 +339,99 @@ def test_manual_at_command_reports_no_new_tasks(tmp_path) -> None:
     assert "历史任务 · model-a · 已部署" in manual_card
     assert "扫描" not in manual_card
     assert "提交" not in manual_card
+
+
+def test_at_bot_command_adds_reaction(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_at",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+                "body": {"content": '{"text":"<at id=\\"cli_bot\\"></at> 检测任务"}'},
+                "mentions": [{"id": "cli_bot", "id_type": "app_id", "name": "模型部署bot"}],
+            }
+        ]
+    )
+    config = AppConfig(
+        feishu=FeishuConfig(app_id="cli_bot"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True, manual_poll_lookback_sec=600),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    worker.poll_once()
+
+    assert fake.reactions == [("om_at", "SALUTE")]
+
+
+def test_at_other_bot_command_does_not_add_reaction(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_at_other",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+                "body": {"content": '{"text":"<at id=\\"cli_other\\"></at> 检测任务"}'},
+                "mentions": [{"id": "cli_other", "id_type": "app_id", "name": "其他bot"}],
+            }
+        ]
+    )
+    config = AppConfig(
+        feishu=FeishuConfig(app_id="cli_bot"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True, manual_poll_lookback_sec=600),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    worker.poll_once()
+
+    assert fake.reactions == []
+
+
+def test_polling_auto_discovers_joined_chats(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_1",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+                "body": {"content": '{"text":"hello"}'},
+            }
+        ],
+        chats=[{"chat_id": "oc_a", "name": "A"}, {"chat_id": "oc_b", "name": "B"}],
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(auto_discover_chats=True),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_a", str((now_ms // 1000) - 10))
+    store.set_cursor("chat:oc_b", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    worker.poll_once()
+
+    assert fake.polled_chat_ids == ["oc_a", "oc_b"]
 
 
 def test_manual_at_command_limits_known_task_rescan(tmp_path) -> None:

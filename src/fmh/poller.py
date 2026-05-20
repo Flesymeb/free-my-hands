@@ -32,6 +32,9 @@ log = logging.getLogger(__name__)
 
 
 class PollingFeishuClient(Protocol):
+    def list_chats(self, page_size: int = 50) -> list[dict[str, Any]]:
+        ...
+
     def list_messages(
         self,
         chat_id: str,
@@ -109,6 +112,8 @@ class FeishuPollingWorker:
         self.store = store
         self.feishu = feishu_client
         self.orchestrator = orchestrator
+        self._discovered_chat_ids: list[str] = []
+        self._discovered_chat_ids_at = 0
 
     def run_forever(self) -> None:
         log.info("polling started: interval=%ss", self.config.polling.interval_sec)
@@ -265,6 +270,9 @@ class FeishuPollingWorker:
         if _looks_like_card_payload(text):
             self.store.mark_processed_item(source_key, msg_id, "ignored", summary="interactive card payload")
             return PollStats(scanned=1, ignored=1)
+
+        if _mentions_current_bot(item, text, self.config.feishu.app_id):
+            self._react_to_detected_task(msg_id)
 
         control = _parse_codex_control_command(text)
         if control is not None:
@@ -809,9 +817,32 @@ class FeishuPollingWorker:
         configured = [chat_id for chat_id in self.config.polling.chat_ids if chat_id]
         if configured:
             return configured
+        if self.config.polling.auto_discover_chats:
+            discovered = self._auto_discovered_chat_ids()
+            if discovered:
+                return discovered
         if self.config.feishu.default_chat_id:
             return [self.config.feishu.default_chat_id]
         return []
+
+    def _auto_discovered_chat_ids(self) -> list[str]:
+        now = int(time.time())
+        interval = max(30, int(self.config.polling.chat_discovery_interval_sec))
+        if self._discovered_chat_ids and now - self._discovered_chat_ids_at < interval:
+            return self._discovered_chat_ids
+        try:
+            chats = self.feishu.list_chats(page_size=self.config.polling.page_size)
+        except Exception:
+            log.exception("failed to auto-discover Feishu chats")
+            return self._discovered_chat_ids
+        chat_ids = []
+        for chat in chats:
+            chat_id = str(chat.get("chat_id") or "").strip()
+            if chat_id and chat_id not in chat_ids:
+                chat_ids.append(chat_id)
+        self._discovered_chat_ids = chat_ids
+        self._discovered_chat_ids_at = now
+        return chat_ids
 
     def _create_reuse_review(
         self,
@@ -1070,6 +1101,50 @@ def _manual_command_text(text: str) -> str:
 
 def _contains_at_mention(text: str) -> bool:
     return bool(re.search(r"<at\b", text, flags=re.IGNORECASE) or re.search(r"(^|\s)@\S+", text))
+
+
+def _mentions_current_bot(item: dict[str, Any], text: str, app_id: str) -> bool:
+    if not _contains_at_mention(text):
+        return False
+    app_id = app_id.strip()
+    mentions = _message_mentions(item)
+    if app_id:
+        for mention in mentions:
+            mentioned_id = str(mention.get("id") or mention.get("app_id") or mention.get("user_id") or "").strip()
+            id_type = str(mention.get("id_type") or mention.get("type") or "").lower()
+            if mentioned_id == app_id or (id_type == "app_id" and mentioned_id == app_id):
+                return True
+        text_mention_ids = _at_tag_ids(text)
+        if app_id in text_mention_ids:
+            return True
+        if mentions or text_mention_ids:
+            return False
+    # If Feishu did not include structured mention ids, keep the existing manual
+    # @ command behavior visible by acknowledging the command.
+    return _parse_manual_poll_command(text)
+
+
+def _message_mentions(item: dict[str, Any]) -> list[dict[str, Any]]:
+    mentions: list[dict[str, Any]] = []
+    for value in (item.get("mentions"), item.get("mention")):
+        if isinstance(value, list):
+            mentions.extend(mention for mention in value if isinstance(mention, dict))
+    content = _message_content_json(item)
+    for value in (content.get("mentions"), content.get("mention")):
+        if isinstance(value, list):
+            mentions.extend(mention for mention in value if isinstance(mention, dict))
+    return mentions
+
+
+def _at_tag_ids(text: str) -> set[str]:
+    ids: set[str] = set()
+    for match in re.finditer(r"<at\b(?P<attrs>[^>]*)>", text, flags=re.IGNORECASE):
+        attrs = match.group("attrs")
+        for attr in ("id", "user_id"):
+            attr_match = re.search(rf"\b{attr}\s*=\s*['\"]?(?P<id>[^'\"\s>]+)", attrs, flags=re.IGNORECASE)
+            if attr_match:
+                ids.add(attr_match.group("id"))
+    return ids
 
 
 def _looks_like_card_payload(text: str) -> bool:
