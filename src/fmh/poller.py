@@ -84,6 +84,7 @@ class PollStats:
     ignored: int = 0
     failed: int = 0
     manual_polls: int = 0
+    task_summaries: tuple[str, ...] = ()
 
     def add(self, other: "PollStats") -> "PollStats":
         return PollStats(
@@ -92,6 +93,7 @@ class PollStats:
             ignored=self.ignored + other.ignored,
             failed=self.failed + other.failed,
             manual_polls=self.manual_polls + other.manual_polls,
+            task_summaries=_merge_unique(self.task_summaries, other.task_summaries),
         )
 
 
@@ -368,6 +370,7 @@ class FeishuPollingWorker:
         detection_detail = _task_detection_detail(len(entries), len(pending_entries), counts)
         stats = PollStats(scanned=1)
         submitted_ids: list[str] = []
+        task_summaries: list[str] = []
         failed = 0
         reserved_row_indices = self._reserved_reusable_rows(entry_states)
         for entry, item_key in pending_pairs:
@@ -431,6 +434,7 @@ class FeishuPollingWorker:
                     self.store.mark_processed_item(task_key, item_key, "failed_review", summary=str(exc))
                     continue
                 submitted_ids.append(review_id)
+                task_summaries.append(_task_summary_line(task_title, str(entry.get("weight_path") or "")))
                 self.store.mark_processed_item(
                     task_key,
                     item_key,
@@ -461,6 +465,7 @@ class FeishuPollingWorker:
                 continue
             result = self.orchestrator.submit(request)
             submitted_ids.append(result.request_id)
+            task_summaries.append(_task_summary_line(task_title, str(entry.get("weight_path") or "")))
             self._update_task_status_card(
                 status_task_key,
                 chat_id,
@@ -496,6 +501,7 @@ class FeishuPollingWorker:
             submitted=len(submitted_ids),
             ignored=0 if submitted_ids or failed else 1,
             failed=failed,
+            task_summaries=tuple(task_summaries),
         ), submitted_ids, failed
 
     def _should_process_task_entry(self, task_key: str, item_key: str) -> bool:
@@ -665,24 +671,27 @@ class FeishuPollingWorker:
             if stats.failed:
                 title = "任务检查有失败"
                 color = "red"
-                fallback = f"任务检查完成：提交 {stats.submitted}，失败 {stats.failed}"
+                summary = f"检测到 {stats.failed} 个任务读取或解析失败；已按现有规则进入重试或人工处理。"
+                fallback = f"任务检查有失败：{stats.failed} 个"
             elif stats.submitted:
                 title = "任务检查完成"
                 color = "green"
+                summary = f"已处理 {stats.submitted} 个新部署项，后续进度会更新到对应模型部署卡片。"
                 fallback = f"任务检查完成：已处理 {stats.submitted} 个新任务"
             else:
                 title = "目前无新任务"
                 color = "grey"
+                summary = "最近没有发现新的可部署子任务。"
                 fallback = "目前无新任务。"
-            fields = {
-                "扫描": str(stats.scanned),
-                "提交": str(stats.submitted),
-                "忽略": str(stats.ignored),
-                "失败": str(stats.failed),
-            }
             self._send_chat_card_or_text(
                 chat_id,
-                _status_card(title, color, fields),
+                _manual_poll_result_card(
+                    title,
+                    color,
+                    summary,
+                    task_lines=stats.task_summaries,
+                    recent_lines=_recent_task_status_lines(self.store),
+                ),
                 fallback,
                 reply_to_message_id=msg_id,
             )
@@ -692,6 +701,7 @@ class FeishuPollingWorker:
             ignored=0 if stats.submitted or stats.failed else 1,
             failed=stats.failed,
             manual_polls=1,
+            task_summaries=stats.task_summaries,
         )
 
     def _handle_parse_failure(
@@ -1422,6 +1432,24 @@ def _task_detection_detail(total: int, pending: int, counts: dict[str, int]) -> 
     return "；".join(parts) + "。"
 
 
+def _task_summary_line(task_title: str, weight_path: str) -> str:
+    model_id = _model_id_from_weight_path(weight_path)
+    if task_title and model_id:
+        return f"{task_title} · {model_id}"
+    return task_title or model_id or "未命名任务"
+
+
+def _merge_unique(first: tuple[str, ...], second: tuple[str, ...], *, limit: int = 6) -> tuple[str, ...]:
+    merged: list[str] = []
+    for item in [*first, *second]:
+        item = str(item).strip()
+        if item and item not in merged:
+            merged.append(item)
+        if len(merged) >= limit:
+            break
+    return tuple(merged)
+
+
 def _review_plan_row(review: dict[str, object]) -> dict[str, object]:
     payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
     plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
@@ -1487,6 +1515,46 @@ def _todo_accept_card(count: int, request_ids: list[str], *, review_mode: bool =
     return _status_card("已接收任务子项部署", "blue", fields)
 
 
+def _manual_poll_result_card(
+    title: str,
+    color: str,
+    summary: str,
+    *,
+    task_lines: tuple[str, ...] = (),
+    recent_lines: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": summary},
+        }
+    ]
+    if task_lines:
+        content = "\n".join(f"- {_short_text(line, 88)}" for line in task_lines[:4])
+        elements.append(
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**本轮处理**\n{content}"},
+            }
+        )
+    elif recent_lines:
+        content = "\n".join(f"- {_short_text(line, 88)}" for line in recent_lines[:3])
+        elements.append(
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**最近任务**\n{content}"},
+            }
+        )
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "template": color,
+        },
+        "elements": elements,
+    }
+
+
 def _status_card(title: str, color: str, fields: dict[str, str]) -> dict[str, Any]:
     return {
         "config": {"wide_screen_mode": True},
@@ -1514,3 +1582,36 @@ def _short_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 1)] + "…"
+
+
+def _recent_task_status_lines(store: StateStore, *, limit: int = 3) -> tuple[str, ...]:
+    with store._connect() as conn:  # noqa: SLF001
+        rows = conn.execute(
+            """
+            SELECT value FROM runtime_settings
+            WHERE key LIKE 'task_status:%:item:%'
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (limit * 4,),
+        ).fetchall()
+    lines: list[str] = []
+    for row in rows:
+        try:
+            state = json.loads(str(row["value"]))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(state, dict):
+            continue
+        title = str(state.get("title") or "").strip()
+        model_id = str(state.get("model_id") or "").strip()
+        if not model_id:
+            model_id = _model_id_from_weight_path(str(state.get("model") or ""))
+        status = str(state.get("deploy_status") or "").strip()
+        parts = [part for part in (title, model_id, status) if part]
+        line = " · ".join(parts)
+        if line and line not in lines:
+            lines.append(line)
+        if len(lines) >= limit:
+            break
+    return tuple(lines)

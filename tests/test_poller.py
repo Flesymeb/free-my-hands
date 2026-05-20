@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import signal
 import subprocess
 import time
@@ -27,6 +28,7 @@ class FakeFeishuClient:
         self.subtasks = subtasks or []
         self.doc_markdown = doc_markdown
         self.chat_texts: list[tuple[str, str]] = []
+        self.sent_cards: list[dict[str, Any]] = []
         self.patched_cards: list[tuple[str, dict[str, Any]]] = []
         self.reactions: list[tuple[str, str]] = []
         self.requested_tasks: list[str] = []
@@ -72,6 +74,7 @@ class FakeFeishuClient:
         return self._next_message_id()
 
     def send_chat_card(self, chat_id: str, card: dict[str, Any]) -> str:
+        self.sent_cards.append(card)
         title = card.get("header", {}).get("title", {}).get("content", "card")
         self.chat_texts.append((chat_id, str(title)))
         return self._next_message_id()
@@ -81,6 +84,7 @@ class FakeFeishuClient:
         return self._next_message_id()
 
     def reply_card(self, message_id: str, card: dict[str, Any]) -> str:
+        self.sent_cards.append(card)
         title = card.get("header", {}).get("title", {}).get("content", "card")
         self.chat_texts.append((message_id, str(title)))
         return self._next_message_id()
@@ -282,6 +286,11 @@ def test_manual_at_command_scans_recent_task_share(tmp_path) -> None:
     assert store.get_processed_item("chat:oc_1", "om_todo")["status"] == "submitted"
     assert fake.chat_texts[-1][0] == "om_at"
     assert fake.chat_texts[-1][1] == "任务检查完成"
+    manual_card = json.dumps(fake.sent_cards[-1], ensure_ascii=False)
+    assert "本轮处理" in manual_card
+    assert "deploy batch · model-a" in manual_card
+    assert "扫描" not in manual_card
+    assert "忽略" not in manual_card
 
 
 def test_manual_at_command_reports_no_new_tasks(tmp_path) -> None:
@@ -305,6 +314,10 @@ def test_manual_at_command_reports_no_new_tasks(tmp_path) -> None:
     )
     store = StateStore(config.storage.sqlite_path)
     store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    store.set_task_status(
+        "todo:task_1:item:model_a",
+        {"title": "历史任务", "model_id": "model-a", "deploy_status": "已部署"},
+    )
     orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
     worker = FeishuPollingWorker(config, store, fake, orchestrator)
 
@@ -314,6 +327,11 @@ def test_manual_at_command_reports_no_new_tasks(tmp_path) -> None:
     assert stats.ignored == 1
     assert store.get_processed_item("chat:oc_1", "om_at")["status"] == "manual_poll"
     assert fake.chat_texts[-1] == ("om_at", "目前无新任务")
+    manual_card = json.dumps(fake.sent_cards[-1], ensure_ascii=False)
+    assert "最近任务" in manual_card
+    assert "历史任务 · model-a · 已部署" in manual_card
+    assert "扫描" not in manual_card
+    assert "提交" not in manual_card
 
 
 def test_manual_at_command_limits_known_task_rescan(tmp_path) -> None:
