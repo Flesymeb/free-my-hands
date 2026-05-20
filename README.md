@@ -49,6 +49,9 @@ fmh --config config.local.toml send-test --chat-id oc_xxx --card --text "connect
 pytest -q
 ```
 
+In a Feishu group, send `@bot 检测任务` or `@bot 刷新任务` to force a recent
+task scan. If nothing new is found, the bot replies `目前无新任务`.
+
 ## Config Notes
 
 - Keep `[runner].mode = "dry-run"` until templates and Feishu permissions are verified.

@@ -252,7 +252,7 @@ def test_manual_at_command_scans_recent_task_share(tmp_path) -> None:
                 "msg_type": "text",
                 "create_time": str(now_ms),
                 "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
-                "body": {"content": '{"text":"<at id=\\"ou_bot\\"></at>"}'},
+                "body": {"content": '{"text":"<at id=\\"ou_bot\\"></at> 检测任务"}'},
             },
         ],
         task={"guid": "task_1", "summary": "deploy batch"},
@@ -279,6 +279,39 @@ def test_manual_at_command_scans_recent_task_share(tmp_path) -> None:
     assert store.get_processed_item("chat:oc_1", "om_at")["status"] == "manual_poll"
     assert store.get_processed_item("chat:oc_1", "om_todo")["status"] == "submitted"
     assert fake.chat_texts[-1][0] == "om_at"
+    assert fake.chat_texts[-1][1] == "任务检查完成"
+
+
+def test_manual_at_command_reports_no_new_tasks(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_at",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+                "body": {"content": '{"text":"@模型部署bot 检测任务"}'},
+            }
+        ]
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True, manual_poll_lookback_sec=600),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    stats = worker.poll_once()
+
+    assert stats.submitted == 0
+    assert stats.ignored == 1
+    assert store.get_processed_item("chat:oc_1", "om_at")["status"] == "manual_poll"
+    assert fake.chat_texts[-1] == ("om_at", "目前无新任务")
 
 
 def test_polling_known_todo_task_treats_changed_subtask_as_new_card(tmp_path) -> None:

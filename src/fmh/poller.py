@@ -656,6 +656,18 @@ class FeishuPollingWorker:
         if self.config.polling.deploy_todo_subtasks and self.config.polling.watch_known_todo_tasks:
             stats = stats.add(self._poll_known_todo_tasks(force=True))
         if chat_id and self.config.polling.notify_chat_on_accept:
+            if stats.failed:
+                title = "任务检查有失败"
+                color = "red"
+                fallback = f"任务检查完成：提交 {stats.submitted}，失败 {stats.failed}"
+            elif stats.submitted:
+                title = "任务检查完成"
+                color = "green"
+                fallback = f"任务检查完成：已处理 {stats.submitted} 个新任务"
+            else:
+                title = "目前无新任务"
+                color = "grey"
+                fallback = "目前无新任务。"
             fields = {
                 "扫描": str(stats.scanned),
                 "提交": str(stats.submitted),
@@ -664,8 +676,8 @@ class FeishuPollingWorker:
             }
             self._send_chat_card_or_text(
                 chat_id,
-                _status_card("任务检查已触发", "blue", fields),
-                f"任务检查已触发：提交 {stats.submitted}，失败 {stats.failed}",
+                _status_card(title, color, fields),
+                fallback,
                 reply_to_message_id=msg_id,
             )
         return PollStats(
@@ -1014,9 +1026,8 @@ def _parse_codex_control_command(text: str) -> str | None:
 
 
 def _parse_manual_poll_command(text: str) -> bool:
-    stripped = re.sub(r"<at[^>]*>.*?</at>", "", text).strip().lower()
-    stripped = stripped.strip("。.!！ ")
-    if "<at" in text.lower() and not stripped:
+    stripped = _manual_command_text(text)
+    if _contains_at_mention(text) and not stripped:
         return True
     commands = {
         "poll",
@@ -1026,15 +1037,32 @@ def _parse_manual_poll_command(text: str) -> bool:
         "scan tasks",
         "check tasks",
         "refresh tasks",
+        "detect tasks",
         "检查任务",
+        "检测任务",
+        "查看任务",
+        "查任务",
         "刷新任务",
         "触发轮询",
         "轮询",
         "检查子任务",
+        "检测子任务",
         "刷新子任务",
         "看一下任务",
     }
     return stripped in commands
+
+
+def _manual_command_text(text: str) -> str:
+    stripped = re.sub(r"<at\b[^>]*>.*?</at>", " ", text, flags=re.IGNORECASE)
+    stripped = re.sub(r"<at\b[^>]*/>", " ", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(r"@\S+", " ", stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip().lower()
+    return stripped.strip("。.!！ ")
+
+
+def _contains_at_mention(text: str) -> bool:
+    return bool(re.search(r"<at\b", text, flags=re.IGNORECASE) or re.search(r"(^|\s)@\S+", text))
 
 
 def _looks_like_card_payload(text: str) -> bool:
