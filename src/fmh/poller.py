@@ -864,7 +864,7 @@ class FeishuPollingWorker:
                 address=_plan_address(packet.plan),
                 source_message_id=str(entry.get("status_message_id") or ""),
             )
-        chat_id = self.config.feishu.default_chat_id
+        chat_id = str(entry.get("source_chat_id") or "") or self.config.feishu.default_chat_id
         if chat_id and self.config.polling.notify_chat_on_accept and not self.config.reusable_workers.auto_deploy_approved:
             self._send_chat_card_or_text(
                 chat_id,

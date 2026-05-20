@@ -6,7 +6,7 @@ import subprocess
 import time
 from typing import Any
 
-from fmh.config import AppConfig, PollingConfig, ReusableWorkersConfig, RunnerConfig, StorageConfig, VLLMConfig
+from fmh.config import AppConfig, FeishuConfig, PollingConfig, ReusableWorkersConfig, RunnerConfig, StorageConfig, VLLMConfig
 from fmh.models import RequestStatus
 from fmh.orchestrator import DeploymentOrchestrator
 from fmh.poller import FeishuPollingWorker, _task_item_status_key
@@ -657,6 +657,34 @@ def test_reusable_todo_multiple_new_subtasks_reserve_distinct_rows(tmp_path) -> 
     assert selected_ips == {"192.0.2.14", "192.0.2.15"}
     assert len(status_message_ids) == 2
     assert len(status_task_keys) == 2
+
+
+def test_reusable_review_notice_uses_source_chat_when_default_chat_differs(tmp_path) -> None:
+    doc_markdown = """<table><tbody>
+<tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>
+<tr><td>old/a</td><td>a</td><td>192\\.0\\.2\\.14（4卡）</td><td></td><td></td><td></td><td>tau2\nvita</td><td></td></tr>
+</tbody></table>"""
+    fake = FakeFeishuClient(
+        [],
+        task={"guid": "task_source", "summary": "deploy source"},
+        subtasks=[{"guid": "sub_1", "summary": "/mnt/models/model-a", "description": ""}],
+        doc_markdown=doc_markdown,
+    )
+    config = AppConfig(
+        feishu=FeishuConfig(default_chat_id="oc_default"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_source"], notify_chat_on_accept=True),
+        reusable_workers=ReusableWorkersConfig(enabled=True),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    worker._process_task_subtasks("task_source", "todo:task_source", chat_id="oc_source")  # noqa: SLF001
+
+    assert any(target == "oc_source" and text.startswith("待审核部署计划") for target, text in fake.chat_texts)
+    assert any(target == "oc_default" and text == "复用常驻 worker 部署审核" for target, text in fake.chat_texts)
 
 
 def test_reusable_todo_wakes_review_auditor_after_new_review(tmp_path, monkeypatch) -> None:
