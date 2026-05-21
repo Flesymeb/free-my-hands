@@ -92,6 +92,7 @@ def run_weight_conversion(
     script = _remote_conversion_script(
         script_path=config.script_path,
         conda_env=config.conda_env,
+        conda_sh=config.conda_sh,
         input_path=conversion.input_path,
         output_path=conversion.output_path,
     )
@@ -249,12 +250,22 @@ def _classify_names(names: set[str]) -> str:
     return "unknown"
 
 
-def _remote_conversion_script(*, script_path: str, conda_env: str, input_path: str, output_path: str) -> str:
-    return f"""set -euo pipefail
+def _remote_conversion_script(
+    *,
+    script_path: str,
+    conda_env: str,
+    conda_sh: str,
+    input_path: str,
+    output_path: str,
+) -> str:
+    conda_sh_command = f"source {shlex.quote(conda_sh)}" if conda_sh else ""
+    return f"""set -eo pipefail
 SCRIPT={shlex.quote(script_path)}
 CONDA_ENV={shlex.quote(conda_env)}
 INPUT_DIR={shlex.quote(input_path)}
 OUTPUT_DIR={shlex.quote(output_path)}
+SCRIPT_DIR=$(dirname "$SCRIPT")
+TMP_SCRIPT="$SCRIPT_DIR/.fmh_$(basename "$SCRIPT").$$.sh"
 
 test -f "$SCRIPT"
 if [ -d "$OUTPUT_DIR" ] && [ -n "$(find "$OUTPUT_DIR" -mindepth 1 -print -quit 2>/dev/null)" ]; then
@@ -266,7 +277,9 @@ if [ -d "$OUTPUT_DIR" ] && [ -n "$(find "$OUTPUT_DIR" -mindepth 1 -print -quit 2
   exit 2
 fi
 
-python3 - "$SCRIPT" "$INPUT_DIR" "$OUTPUT_DIR" <<'PY'
+cp "$SCRIPT" "$TMP_SCRIPT"
+trap 'rm -f "$TMP_SCRIPT"' EXIT
+python3 - "$TMP_SCRIPT" "$INPUT_DIR" "$OUTPUT_DIR" <<'PY'
 import pathlib
 import re
 import sys
@@ -282,15 +295,18 @@ path.write_text(text)
 PY
 
 source ~/.bashrc >/dev/null 2>&1 || true
-if command -v conda >/dev/null 2>&1; then
-  eval "$(conda shell.bash hook)"
-elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+{conda_sh_command}
+if ! command -v conda >/dev/null 2>&1 && [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
   source "$HOME/miniconda3/etc/profile.d/conda.sh"
-elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+elif ! command -v conda >/dev/null 2>&1 && [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
   source "$HOME/anaconda3/etc/profile.d/conda.sh"
 fi
+if command -v conda >/dev/null 2>&1; then
+  eval "$(conda shell.bash hook)"
+fi
 conda activate "$CONDA_ENV"
-bash "$SCRIPT"
+cd "$SCRIPT_DIR"
+bash "$TMP_SCRIPT"
 test -d "$OUTPUT_DIR"
 """
 

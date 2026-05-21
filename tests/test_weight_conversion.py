@@ -156,6 +156,7 @@ def test_run_weight_conversion_patches_remote_script_and_invokes_ssh(monkeypatch
             enabled=True,
             host="converter@example.com",
             conda_env="smile",
+            conda_sh="/opt/miniconda3/etc/profile.d/conda.sh",
             script_path="/opt/trans.sh",
             timeout_sec=123,
         ),
@@ -183,7 +184,13 @@ def test_run_weight_conversion_patches_remote_script_and_invokes_ssh(monkeypatch
     assert call["timeout"] == 123
     script = str(call["input"])
     assert "SCRIPT=/opt/trans.sh" in script
+    assert 'SCRIPT_DIR=$(dirname "$SCRIPT")' in script
+    assert 'TMP_SCRIPT="$SCRIPT_DIR/.fmh_$(basename "$SCRIPT").$$.sh"' in script
+    assert 'cp "$SCRIPT" "$TMP_SCRIPT"' in script
+    assert "python3 - \"$TMP_SCRIPT\" \"$INPUT_DIR\" \"$OUTPUT_DIR\"" in script
+    assert 'cd "$SCRIPT_DIR"' in script
     assert "CONDA_ENV=smile" in script
+    assert "source /opt/miniconda3/etc/profile.d/conda.sh" in script
     assert "INPUT_DIR=/mnt/gpfs/team/run/iter_1" in script
     assert "OUTPUT_DIR=/mnt/gpfs/team/run/hf_iter_1" in script
     assert "conversion output exists but is not a complete HF checkpoint" in script

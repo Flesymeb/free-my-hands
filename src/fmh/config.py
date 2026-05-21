@@ -118,6 +118,7 @@ class WeightConversionConfig:
     detect_timeout_sec: int = 20
     host: str = ""
     conda_env: str = ""
+    conda_sh: str = ""
     script_path: str = ""
     timeout_sec: int = 7200
 
@@ -248,6 +249,8 @@ def _apply_env_overrides(config: AppConfig) -> AppConfig:
         weight_conversion = replace(weight_conversion, host=os.environ["FMH_WEIGHT_CONVERSION_HOST"])
     if os.getenv("FMH_WEIGHT_CONVERSION_CONDA_ENV"):
         weight_conversion = replace(weight_conversion, conda_env=os.environ["FMH_WEIGHT_CONVERSION_CONDA_ENV"])
+    if os.getenv("FMH_WEIGHT_CONVERSION_CONDA_SH"):
+        weight_conversion = replace(weight_conversion, conda_sh=os.environ["FMH_WEIGHT_CONVERSION_CONDA_SH"])
     if os.getenv("FMH_WEIGHT_CONVERSION_SCRIPT_PATH"):
         weight_conversion = replace(weight_conversion, script_path=os.environ["FMH_WEIGHT_CONVERSION_SCRIPT_PATH"])
     if os.getenv("FMH_APPROVAL_FALLBACK_CHAT_ID"):

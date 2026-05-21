@@ -86,6 +86,8 @@ remote_format_detection = true
 detect_timeout_sec = 20
 host = "converter-user@converter-host.example.com"
 conda_env = "converter-env"
+# Optional. Set this when the SSH login user has multiple conda installations.
+conda_sh = "/path/to/miniconda3/etc/profile.d/conda.sh"
 script_path = "/path/to/trans.sh"
 timeout_sec = 7200
 
