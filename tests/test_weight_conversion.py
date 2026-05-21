@@ -11,10 +11,10 @@ from fmh.weight_conversion import plan_weight_conversion, run_weight_conversion
 
 def test_plan_weight_conversion_uses_normalized_worker_path() -> None:
     plan = plan_weight_conversion(
-        "/mnt/shared-storage-user/ma4agi-gpu/zhangchen/vita/model_ckpt/run/iter_0000005",
+        "/mnt/shared-storage-user/ma4agi-gpu/team_alpha/vita/model_ckpt/run/iter_0000005",
         WeightConversionConfig(
             enabled=True,
-            source_prefixes=["/mnt/gpfs/ma4agi-gpu/zhangchen"],
+            source_prefixes=["/mnt/gpfs/ma4agi-gpu/team_alpha"],
             output_basename_prefix="hf_",
         ),
         ReusableWorkersConfig(
@@ -25,9 +25,55 @@ def test_plan_weight_conversion_uses_normalized_worker_path() -> None:
     )
 
     assert plan is not None
-    assert plan.original_weight_path == "/mnt/shared-storage-user/ma4agi-gpu/zhangchen/vita/model_ckpt/run/iter_0000005"
-    assert plan.input_path == "/mnt/gpfs/ma4agi-gpu/zhangchen/vita/model_ckpt/run/iter_0000005"
-    assert plan.output_path == "/mnt/gpfs/ma4agi-gpu/zhangchen/vita/model_ckpt/run/hf_iter_0000005"
+    assert plan.original_weight_path == "/mnt/shared-storage-user/ma4agi-gpu/team_alpha/vita/model_ckpt/run/iter_0000005"
+    assert plan.input_path == "/mnt/gpfs/ma4agi-gpu/team_alpha/vita/model_ckpt/run/iter_0000005"
+    assert plan.output_path == "/mnt/gpfs/ma4agi-gpu/team_alpha/vita/model_ckpt/run/hf_iter_0000005"
+
+
+def test_plan_weight_conversion_handles_requested_checkpoint_shape() -> None:
+    raw_path = (
+        "/mnt/shared-storage-user/ma4agi-gpu/team_alpha/vita/model_ckpt/"
+        "training_family_0514_1280/"
+        "model-run-0514-1280-20260520_031524/"
+        "iter_0000005"
+    )
+    expected_input = (
+        "/mnt/gpfs/ma4agi-gpu/team_alpha/vita/model_ckpt/"
+        "training_family_0514_1280/"
+        "model-run-0514-1280-20260520_031524/"
+        "iter_0000005"
+    )
+    expected_output = (
+        "/mnt/gpfs/ma4agi-gpu/team_alpha/vita/model_ckpt/"
+        "training_family_0514_1280/"
+        "model-run-0514-1280-20260520_031524/"
+        "hf_iter_0000005"
+    )
+
+    plan = plan_weight_conversion(
+        raw_path,
+        WeightConversionConfig(
+            enabled=True,
+            source_prefixes=["/mnt/gpfs/ma4agi-gpu/team_alpha"],
+            output_basename_prefix="hf_",
+        ),
+        ReusableWorkersConfig(
+            source_model_prefix="/mnt/shared-storage-user/ma4agi-gpu",
+            worker_model_prefix="/mnt/gpfs/ma4agi-gpu",
+            table_model_prefix="/mnt/gpfs/ma4agi-gpu",
+        ),
+    )
+
+    assert plan is not None
+    assert plan.original_weight_path == raw_path
+    assert plan.input_path == expected_input
+    assert plan.output_path == expected_output
+    assert plan.to_dict() == {
+        "input_path": expected_input,
+        "output_path": expected_output,
+        "original_weight_path": raw_path,
+        "required": True,
+    }
 
 
 def test_plan_weight_conversion_ignores_disabled_unmatched_and_already_converted_paths() -> None:
@@ -35,13 +81,13 @@ def test_plan_weight_conversion_ignores_disabled_unmatched_and_already_converted
         source_model_prefix="/mnt/shared-storage-user/ma4agi-gpu",
         worker_model_prefix="/mnt/gpfs/ma4agi-gpu",
     )
-    config = WeightConversionConfig(enabled=True, source_prefixes=["/mnt/gpfs/ma4agi-gpu/zhangchen"])
+    config = WeightConversionConfig(enabled=True, source_prefixes=["/mnt/gpfs/ma4agi-gpu/team_alpha"])
 
     assert plan_weight_conversion("/mnt/gpfs/ma4agi-gpu/zhangbo/run/iter_1", config, reusable) is None
-    assert plan_weight_conversion("/mnt/gpfs/ma4agi-gpu/zhangchen/run/hf_iter_1", config, reusable) is None
+    assert plan_weight_conversion("/mnt/gpfs/ma4agi-gpu/team_alpha/run/hf_iter_1", config, reusable) is None
     assert plan_weight_conversion(
-        "/mnt/gpfs/ma4agi-gpu/zhangchen/run/iter_1",
-        WeightConversionConfig(enabled=False, source_prefixes=["/mnt/gpfs/ma4agi-gpu/zhangchen"]),
+        "/mnt/gpfs/ma4agi-gpu/team_alpha/run/iter_1",
+        WeightConversionConfig(enabled=False, source_prefixes=["/mnt/gpfs/ma4agi-gpu/team_alpha"]),
         reusable,
     ) is None
 

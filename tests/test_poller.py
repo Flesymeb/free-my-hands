@@ -950,8 +950,8 @@ def test_reusable_todo_converts_matching_weight_path_before_planning(tmp_path) -
 <tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>
 <tr><td></td><td></td><td>192\\.0\\.2\\.14（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
 </tbody></table>"""
-    raw_path = "/mnt/shared-storage-user/ma4agi-gpu/zhangchen/vita/model_ckpt/run/iter_0000005"
-    converted_path = "/mnt/gpfs/ma4agi-gpu/zhangchen/vita/model_ckpt/run/hf_iter_0000005"
+    raw_path = "/mnt/shared-storage-user/ma4agi-gpu/team_alpha/vita/model_ckpt/run/iter_0000005"
+    converted_path = "/mnt/gpfs/ma4agi-gpu/team_alpha/vita/model_ckpt/run/hf_iter_0000005"
     fake = FakeFeishuClient(
         [],
         task={"guid": "task_convert", "summary": "convert deploy"},
@@ -970,7 +970,7 @@ def test_reusable_todo_converts_matching_weight_path_before_planning(tmp_path) -
         ),
         weight_conversion=WeightConversionConfig(
             enabled=True,
-            source_prefixes=["/mnt/gpfs/ma4agi-gpu/zhangchen"],
+            source_prefixes=["/mnt/gpfs/ma4agi-gpu/team_alpha"],
         ),
     )
     store = StateStore(config.storage.sqlite_path)
