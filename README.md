@@ -62,7 +62,7 @@ task scan. If nothing new is found, the bot replies `目前无新任务`.
 - Keep `[runner].mode = "dry-run"` until templates and Feishu permissions are verified.
 - Use `[runner].mode = "tmux"` for real deployment.
 - Tune `[reusable_workers].max_parallel_deployments` to control concurrent deployments.
-- Configure `[weight_conversion]` when a model family needs conversion before vLLM deployment.
+- Configure `[weight_conversion]` when non-HF checkpoints need conversion before vLLM deployment. With format detection enabled, broad roots are safe: HF-style directories are skipped, and DistCP-style directories are converted.
 - Configure human fallback mentions under `[approval]`; do not hard-code names in code.
 - Configure follow-up bot notification under `[post_deploy_notify]`.
 - Feishu setup references: [permissions](feishu/permissions.json) and

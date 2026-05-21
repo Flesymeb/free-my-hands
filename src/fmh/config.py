@@ -112,6 +112,10 @@ class WeightConversionConfig:
     enabled: bool = False
     source_prefixes: list[str] = field(default_factory=list)
     output_basename_prefix: str = "hf_"
+    format_detection_enabled: bool = False
+    format_detection_required: bool = True
+    remote_format_detection: bool = True
+    detect_timeout_sec: int = 20
     host: str = ""
     conda_env: str = ""
     script_path: str = ""

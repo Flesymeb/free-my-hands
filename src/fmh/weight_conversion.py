@@ -4,6 +4,7 @@ import posixpath
 import shlex
 import subprocess
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from fmh.config import ReusableWorkersConfig, WeightConversionConfig
@@ -15,6 +16,7 @@ class WeightConversionPlan:
     input_path: str
     output_path: str
     original_weight_path: str
+    detected_format: str = ""
     required: bool = True
 
     def to_dict(self) -> dict[str, Any]:
@@ -52,12 +54,33 @@ def plan_weight_conversion(
     parent, basename = posixpath.split(input_path.rstrip("/"))
     if not basename or basename.startswith(output_prefix):
         return None
+
+    detected_format = ""
+    if config.format_detection_enabled:
+        detected_format = detect_weight_format(input_path, config)
+        if detected_format == "hf":
+            return None
+        if detected_format != "distcp":
+            if config.format_detection_required:
+                raise RuntimeError(f"unsupported or unknown weight format for conversion: {input_path} ({detected_format})")
+            return None
+
     output_path = posixpath.join(parent, output_prefix + basename)
     return WeightConversionPlan(
         input_path=input_path,
         output_path=output_path,
         original_weight_path=original,
+        detected_format=detected_format,
     )
+
+
+def detect_weight_format(path: str, config: WeightConversionConfig | None = None) -> str:
+    local = _detect_local_format(path)
+    if local != "missing":
+        return local
+    if config and config.remote_format_detection and config.host:
+        return _detect_remote_format(path, config)
+    return local
 
 
 def run_weight_conversion(
@@ -117,6 +140,7 @@ def _coerce_plan(plan: WeightConversionPlan | dict[str, Any]) -> WeightConversio
         input_path=str(plan.get("input_path") or ""),
         output_path=str(plan.get("output_path") or ""),
         original_weight_path=str(plan.get("original_weight_path") or ""),
+        detected_format=str(plan.get("detected_format") or ""),
         required=bool(plan.get("required", True)),
     )
 
@@ -133,6 +157,96 @@ def _validate_config(config: WeightConversionConfig) -> None:
     ]
     if missing:
         raise RuntimeError(f"weight conversion config missing: {', '.join(missing)}")
+
+
+def _detect_local_format(path: str) -> str:
+    directory = Path(path)
+    if not directory.is_dir():
+        return "missing"
+    try:
+        names = {item.name for item in directory.iterdir()}
+    except OSError:
+        return "unknown"
+    return _classify_names(names)
+
+
+def _detect_remote_format(path: str, config: WeightConversionConfig) -> str:
+    script = f"""set -e
+DIR={shlex.quote(path)}
+if [ ! -d "$DIR" ]; then
+  echo missing
+  exit 0
+fi
+has_config=0
+has_hf_weight=0
+has_distcp=0
+has_distcp_meta=0
+[ -f "$DIR/config.json" ] && has_config=1
+if [ -n "$(find "$DIR" -maxdepth 1 -type f \\( -name '*.safetensors' -o -name 'model.safetensors.index.json' -o -name 'pytorch_model*.bin' \\) -print -quit 2>/dev/null)" ]; then
+  has_hf_weight=1
+fi
+if [ -n "$(find "$DIR" -maxdepth 1 -type f -name '*.distcp' -print -quit 2>/dev/null)" ]; then
+  has_distcp=1
+fi
+if [ -f "$DIR/common.pt" ] || [ -f "$DIR/metadata.json" ] || [ -f "$DIR/.metadata" ]; then
+  has_distcp_meta=1
+fi
+if [ "$has_config" = 1 ] && [ "$has_hf_weight" = 1 ]; then
+  echo hf
+elif [ "$has_distcp" = 1 ] && [ "$has_distcp_meta" = 1 ]; then
+  echo distcp
+elif [ "$has_config" = 1 ]; then
+  echo hf
+else
+  echo unknown
+fi
+"""
+    result = subprocess.run(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "UpdateHostKeys=no",
+            "-o",
+            "ServerAliveInterval=60",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-CAXY",
+            config.host,
+            "bash",
+            "-s",
+        ],
+        input=script,
+        text=True,
+        capture_output=True,
+        timeout=config.detect_timeout_sec,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+        raise RuntimeError(f"weight format detection failed ({result.returncode}): {_short(detail, 500)}")
+    detected = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "unknown"
+    return detected if detected in {"hf", "distcp", "missing", "unknown"} else "unknown"
+
+
+def _classify_names(names: set[str]) -> str:
+    has_config = "config.json" in names
+    has_hf_weight = any(
+        name.endswith(".safetensors") or name == "model.safetensors.index.json" or name.startswith("pytorch_model")
+        for name in names
+    )
+    has_distcp = any(name.endswith(".distcp") for name in names)
+    has_distcp_meta = bool({"common.pt", "metadata.json", ".metadata"} & names)
+    if has_config and has_hf_weight:
+        return "hf"
+    if has_distcp and has_distcp_meta:
+        return "distcp"
+    if has_config:
+        return "hf"
+    return "unknown"
 
 
 def _remote_conversion_script(*, script_path: str, conda_env: str, input_path: str, output_path: str) -> str:

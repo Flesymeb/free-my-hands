@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from fmh.config import ReusableWorkersConfig, WeightConversionConfig
-from fmh.weight_conversion import plan_weight_conversion, run_weight_conversion
+from fmh.weight_conversion import detect_weight_format, plan_weight_conversion, run_weight_conversion
 
 
 def test_plan_weight_conversion_uses_normalized_worker_path() -> None:
@@ -72,8 +72,53 @@ def test_plan_weight_conversion_handles_requested_checkpoint_shape() -> None:
         "input_path": expected_input,
         "output_path": expected_output,
         "original_weight_path": raw_path,
+        "detected_format": "",
         "required": True,
     }
+
+
+def test_plan_weight_conversion_uses_format_detection(tmp_path) -> None:
+    distcp_dir = tmp_path / "distcp_iter"
+    distcp_dir.mkdir()
+    (distcp_dir / "__0_0.distcp").write_text("shard")
+    (distcp_dir / "common.pt").write_text("common")
+    (distcp_dir / "metadata.json").write_text("{}")
+
+    hf_dir = tmp_path / "hf_model"
+    hf_dir.mkdir()
+    (hf_dir / "config.json").write_text("{}")
+    (hf_dir / "model.safetensors.index.json").write_text("{}")
+
+    config = WeightConversionConfig(
+        enabled=True,
+        source_prefixes=[str(tmp_path)],
+        format_detection_enabled=True,
+        remote_format_detection=False,
+    )
+
+    plan = plan_weight_conversion(str(distcp_dir), config)
+
+    assert detect_weight_format(str(distcp_dir), config) == "distcp"
+    assert plan is not None
+    assert plan.detected_format == "distcp"
+    assert plan.output_path == str(tmp_path / "hf_distcp_iter")
+    assert detect_weight_format(str(hf_dir), config) == "hf"
+    assert plan_weight_conversion(str(hf_dir), config) is None
+
+
+def test_plan_weight_conversion_rejects_unknown_format_when_detection_is_required(tmp_path) -> None:
+    unknown_dir = tmp_path / "unknown_iter"
+    unknown_dir.mkdir()
+    config = WeightConversionConfig(
+        enabled=True,
+        source_prefixes=[str(tmp_path)],
+        format_detection_enabled=True,
+        remote_format_detection=False,
+        format_detection_required=True,
+    )
+
+    with pytest.raises(RuntimeError, match="unsupported or unknown weight format"):
+        plan_weight_conversion(str(unknown_dir), config)
 
 
 def test_plan_weight_conversion_ignores_disabled_unmatched_and_already_converted_paths() -> None:
