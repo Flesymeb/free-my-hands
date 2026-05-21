@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fmh.time_utils import utc_now_iso
@@ -256,6 +257,7 @@ def _stage_detail_suffix(status: str, detail: str) -> str:
     if not text:
         return ""
     limit = 140 if status in {"失败", "错误", "需人工"} else 72
+    text = _compact_paths_in_text(text, limit)
     return f" · {_md_escape(_short(text, limit))}"
 
 
@@ -322,6 +324,45 @@ def _md_escape(value: str) -> str:
     for char in ("*", "_", "~", "`", "[", "]", "(", ")"):
         escaped = escaped.replace(char, "\\" + char)
     return escaped
+
+
+def _compact_paths_in_text(text: str, limit: int) -> str:
+    matches = list(
+        re.finditer(
+            r"(?P<path>(?:/|s3://|oss://|hdfs://|hf://|gs://)[^\s`'\"，,。]+)",
+            text,
+        )
+    )
+    if not matches:
+        return text
+    non_path_len = len(text) - sum(len(match.group("path")) for match in matches)
+    path_limit = max(24, (limit - non_path_len) // len(matches))
+    parts: list[str] = []
+    cursor = 0
+    for match in matches:
+        parts.append(text[cursor : match.start("path")])
+        parts.append(_path_tail_short(match.group("path"), path_limit))
+        cursor = match.end("path")
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def _path_tail_short(value: str, limit: int) -> str:
+    value = value.strip().rstrip("/")
+    if len(value) <= limit:
+        return value
+    path_parts = [part for part in value.split("/") if part]
+    suffix_parts: list[str] = []
+    for part in reversed(path_parts):
+        candidate_parts = [part, *suffix_parts]
+        candidate = ".../" + "/".join(candidate_parts)
+        if len(candidate) > limit:
+            break
+        suffix_parts = candidate_parts
+    if suffix_parts:
+        return ".../" + "/".join(suffix_parts)
+    tail_limit = max(1, limit - 1)
+    return "…" + value[-tail_limit:]
 
 
 def _short(value: str, limit: int) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from typing import Any
 
 from fmh.config import (
@@ -486,6 +487,66 @@ def test_execute_runs_weight_conversion_before_worker_preflight(tmp_path) -> Non
         "wait",
     ]
     assert result == {"worker": "192.0.2.2", "model_id": "hf_iter_1", "endpoint": "http://192.0.2.2:8000"}
+
+
+def test_stop_existing_vllm_falls_back_when_tmux_interrupt_times_out(tmp_path) -> None:
+    calls: list[str] = []
+    config = AppConfig(storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")))
+    store = StateStore(config.storage.sqlite_path)
+
+    class RecordingExecutor(ReusableDeploymentExecutor):
+        def _run_dev(self, command: str, *, timeout: int, check: bool) -> RemoteResult:
+            calls.append(f"dev:{command}")
+            if "tmux send-keys" in command:
+                return RemoteResult(command, 124, "", "remote command timed out")
+            return RemoteResult(command, 0, "", "")
+
+        def _wait_endpoint_down(self, endpoint: str, *, timeout_sec: int) -> bool:
+            calls.append(f"wait:{timeout_sec}")
+            return timeout_sec == 30
+
+        def _run_worker(
+            self,
+            ip: str,
+            command: str,
+            *,
+            timeout: int,
+            check: bool,
+            tmux_session: str | None = None,
+        ) -> RemoteResult:
+            calls.append(f"worker:{command}")
+            return RemoteResult(command, 0, "", "")
+
+        def _kill_leftover_gpu_apps(self, ip: str, session: str) -> None:
+            calls.append("kill_leftover")
+
+    executor = RecordingExecutor(config, store, FakeFeishuClient())  # type: ignore[arg-type]
+
+    executor._stop_existing_vllm("192.0.2.2", "ssh_4_gpu_2_2", "http://192.0.2.2:8000")  # noqa: SLF001
+
+    assert calls[0].startswith("dev:tmux send-keys")
+    assert calls[1] == "wait:45"
+    assert calls[2].startswith("worker:")
+    assert calls[3] == "wait:30"
+    assert calls[4] == "kill_leftover"
+
+
+def test_run_dev_returns_timeout_result(tmp_path, monkeypatch) -> None:
+    config = AppConfig(storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")))
+    store = StateStore(config.storage.sqlite_path)
+    executor = ReusableDeploymentExecutor(config, store, FakeFeishuClient())  # type: ignore[arg-type]
+
+    def raise_timeout(*args: Any, **kwargs: Any) -> None:
+        raise subprocess.TimeoutExpired(cmd=["ssh"], timeout=3, output=b"out", stderr=b"err")
+
+    monkeypatch.setattr("fmh.reusable_executor.subprocess.run", raise_timeout)
+
+    result = executor._run_dev("tmux send-keys -t target C-c", timeout=3, check=False)  # noqa: SLF001
+
+    assert result.returncode == 124
+    assert result.stdout == "out"
+    assert "err" in result.stderr
+    assert "remote command timed out after 3s" in result.stderr
 
 
 def test_execute_skips_restart_when_target_model_is_already_serving(tmp_path) -> None:

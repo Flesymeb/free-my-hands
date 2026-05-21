@@ -135,6 +135,27 @@ def test_task_status_card_hides_actions_when_card_callbacks_disabled() -> None:
     assert "retry rvw-test" in rendered
 
 
+def test_task_status_card_keeps_long_conversion_path_tail_visible() -> None:
+    output_path = (
+        "/mnt/gpfs/ma4agi-gpu/team_alpha/project/model_ckpt/run_group_0514_1280/"
+        "example-run-0514-1280-20260520_031524/hf_iter_0000005"
+    )
+    state = task_status_with_stage(
+        {},
+        "convert",
+        "进行中",
+        f"正在转换到 {output_path}。",
+        model_id="hf_iter_0000005",
+        model=output_path,
+    )
+
+    rendered = _rendered_text(task_status_card(state))
+
+    assert "正在转换到 .../" in rendered
+    assert "hf\\_iter\\_0000005。" in rendered
+    assert "run_group_05…" not in rendered
+
+
 def _rendered_text(card: dict[str, object]) -> str:
     chunks: list[str] = []
     for element in card.get("elements", []):

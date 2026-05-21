@@ -227,11 +227,17 @@ class ReusableDeploymentExecutor:
 
     def _stop_existing_vllm(self, ip: str, session: str, endpoint: str) -> None:
         target = _worker_tmux_target(session)
-        self._run_dev(
+        stop_signal = self._run_dev(
             f"tmux send-keys -t {shlex.quote(target)} C-c",
-            timeout=20,
-            check=True,
+            timeout=60,
+            check=False,
         )
+        if stop_signal.returncode != 0:
+            log.warning(
+                "failed to send tmux interrupt to %s before fallback cleanup: %s",
+                target,
+                _short("\n".join(part for part in (stop_signal.stdout, stop_signal.stderr) if part), 300),
+            )
         if self._wait_endpoint_down(endpoint, timeout_sec=45):
             self._kill_leftover_gpu_apps(ip, session)
             return
@@ -428,13 +434,27 @@ class ReusableDeploymentExecutor:
             self.config.reusable_workers.dev_host,
             command,
         ]
-        result = subprocess.run(
-            args,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                args,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = _timeout_output_to_text(exc.stdout)
+            stderr = _timeout_output_to_text(exc.stderr)
+            detail = f"remote command timed out after {timeout}s: {command}"
+            remote = RemoteResult(
+                command=command,
+                returncode=124,
+                stdout=stdout,
+                stderr="\n".join(part for part in (stderr, detail) if part),
+            )
+            if check:
+                raise ReusableDeploymentError(detail)
+            return remote
         remote = RemoteResult(
             command=command,
             returncode=result.returncode,
@@ -1003,6 +1023,14 @@ def _short(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 1] + "…"
+
+
+def _timeout_output_to_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _md_escape(value: str) -> str:
