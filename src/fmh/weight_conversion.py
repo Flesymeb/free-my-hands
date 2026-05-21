@@ -16,6 +16,7 @@ class WeightConversionPlan:
     input_path: str
     output_path: str
     original_weight_path: str
+    output_override: str = ""
     detected_format: str = ""
     required: bool = True
 
@@ -36,6 +37,8 @@ def plan_weight_conversion(
     weight_path: str,
     config: WeightConversionConfig,
     reusable_config: ReusableWorkersConfig | None = None,
+    *,
+    output_override: str = "",
 ) -> WeightConversionPlan | None:
     if not config.enabled:
         return None
@@ -65,11 +68,17 @@ def plan_weight_conversion(
                 raise RuntimeError(f"unsupported or unknown weight format for conversion: {input_path} ({detected_format})")
             return None
 
-    output_path = posixpath.join(parent, output_prefix + basename)
+    output_path = _conversion_output_path(
+        input_path,
+        output_override,
+        output_prefix,
+        reusable_config,
+    )
     return WeightConversionPlan(
         input_path=input_path,
         output_path=output_path,
         original_weight_path=original,
+        output_override=output_override.strip(),
         detected_format=detected_format,
     )
 
@@ -141,6 +150,7 @@ def _coerce_plan(plan: WeightConversionPlan | dict[str, Any]) -> WeightConversio
         input_path=str(plan.get("input_path") or ""),
         output_path=str(plan.get("output_path") or ""),
         original_weight_path=str(plan.get("original_weight_path") or ""),
+        output_override=str(plan.get("output_override") or ""),
         detected_format=str(plan.get("detected_format") or ""),
         required=bool(plan.get("required", True)),
     )
@@ -158,6 +168,23 @@ def _validate_config(config: WeightConversionConfig) -> None:
     ]
     if missing:
         raise RuntimeError(f"weight conversion config missing: {', '.join(missing)}")
+
+
+def _conversion_output_path(
+    input_path: str,
+    output_override: str,
+    output_prefix: str,
+    reusable_config: ReusableWorkersConfig | None,
+) -> str:
+    parent, basename = posixpath.split(input_path.rstrip("/"))
+    override = str(output_override or "").strip().strip("`'\"，,")
+    if not override:
+        return posixpath.join(parent, output_prefix + basename)
+    if override.startswith("/"):
+        return normalize_model_path(override, reusable_config).worker_path if reusable_config else override
+    if "/" in override:
+        return posixpath.join(parent, override.strip("/"))
+    return posixpath.join(parent, override)
 
 
 def _detect_local_format(path: str) -> str:

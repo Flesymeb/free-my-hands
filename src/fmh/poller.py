@@ -1343,7 +1343,10 @@ def _deployment_entries_from_task(
             for part in (_task_summary(subtask), _task_description(subtask))
             if part
         )
+        conversion_output_override = _extract_conversion_output_override(raw_text)
         for line in _candidate_lines(raw_text):
+            if _is_conversion_output_override_line(line) and not _has_deployment_path_key(line):
+                continue
             weight_path = _extract_weight_path_from_line(line, relative_prefix)
             if not weight_path:
                 continue
@@ -1353,6 +1356,7 @@ def _deployment_entries_from_task(
                     "subtask_guid": subtask_guid or hashlib.sha1(line.encode("utf-8")).hexdigest()[:12],
                     "weight_path": weight_path,
                     "model_name": model_name,
+                    "conversion_output_override": conversion_output_override,
                     "raw_line": line,
                     "parent": parent,
                     "subtask": subtask,
@@ -1366,6 +1370,7 @@ def _apply_weight_conversion_to_entry(entry: dict[str, Any], config: AppConfig) 
         str(entry.get("weight_path") or ""),
         config.weight_conversion,
         config.reusable_workers,
+        output_override=str(entry.get("conversion_output_override") or ""),
     )
     if plan is None:
         return entry
@@ -1457,7 +1462,7 @@ def _candidate_lines(text: str) -> list[str]:
 
 
 def _extract_weight_path_from_line(line: str, relative_prefix: str) -> str:
-    explicit = re.search(r"(?:weight_path|model_path|ckpt|checkpoint|权重路径|路径)\s*[:=：]\s*(?P<path>\S+)", line)
+    explicit = _deployment_path_key_match(line)
     if explicit:
         return explicit.group("path").strip("`'\"，,")
     storage = re.search(
@@ -1469,6 +1474,39 @@ def _extract_weight_path_from_line(line: str, relative_prefix: str) -> str:
     if relative_prefix and _looks_like_relative_model_path(line):
         return relative_prefix.rstrip("/") + "/" + line.strip("`'\"，,").lstrip("/")
     return ""
+
+
+def _has_deployment_path_key(line: str) -> bool:
+    return _deployment_path_key_match(line) is not None
+
+
+def _deployment_path_key_match(line: str) -> re.Match[str] | None:
+    return re.search(r"(?:weight_path|model_path|ckpt|checkpoint|权重路径|路径)\s*[:=：]\s*(?P<path>\S+)", line)
+
+
+def _extract_conversion_output_override(text: str) -> str:
+    for line in _candidate_lines(text):
+        match = _conversion_output_override_match(line)
+        if match:
+            return match.group("value").strip("`'\"，,")
+    return ""
+
+
+def _is_conversion_output_override_line(line: str) -> bool:
+    return _conversion_output_override_match(line) is not None
+
+
+def _conversion_output_override_match(line: str) -> re.Match[str] | None:
+    return re.search(
+        (
+            r"(?:hf_name|hf_model_name|hf_dir|output_name|output_dir|output_path|"
+            r"convert_name|converted_name|conversion_name|"
+            r"转换名|转换名称|输出名|输出名称|转换输出|转换路径|hf目录|命名)"
+            r"\s*[:=：]\s*(?P<value>\S+)"
+        ),
+        line,
+        flags=re.IGNORECASE,
+    )
 
 
 def _looks_like_relative_model_path(line: str) -> bool:

@@ -72,6 +72,7 @@ def test_plan_weight_conversion_handles_requested_checkpoint_shape() -> None:
         "input_path": expected_input,
         "output_path": expected_output,
         "original_weight_path": raw_path,
+        "output_override": "",
         "detected_format": "",
         "required": True,
     }
@@ -119,6 +120,34 @@ def test_plan_weight_conversion_rejects_unknown_format_when_detection_is_require
 
     with pytest.raises(RuntimeError, match="unsupported or unknown weight format"):
         plan_weight_conversion(str(unknown_dir), config)
+
+
+def test_plan_weight_conversion_allows_manual_output_name() -> None:
+    reusable = ReusableWorkersConfig(
+        source_model_prefix="/mnt/shared-storage-user/ma4agi-gpu",
+        worker_model_prefix="/mnt/gpfs/ma4agi-gpu",
+        table_model_prefix="/mnt/gpfs/ma4agi-gpu",
+    )
+    config = WeightConversionConfig(enabled=True, source_prefixes=["/mnt/gpfs/ma4agi-gpu/team_alpha"])
+
+    named = plan_weight_conversion(
+        "/mnt/shared-storage-user/ma4agi-gpu/team_alpha/run/iter_1",
+        config,
+        reusable,
+        output_override="manual_hf_name",
+    )
+    absolute = plan_weight_conversion(
+        "/mnt/shared-storage-user/ma4agi-gpu/team_alpha/run/iter_1",
+        config,
+        reusable,
+        output_override="/mnt/shared-storage-user/ma4agi-gpu/team_alpha/custom/manual_hf_path",
+    )
+
+    assert named is not None
+    assert named.output_path == "/mnt/gpfs/ma4agi-gpu/team_alpha/run/manual_hf_name"
+    assert named.output_override == "manual_hf_name"
+    assert absolute is not None
+    assert absolute.output_path == "/mnt/gpfs/ma4agi-gpu/team_alpha/custom/manual_hf_path"
 
 
 def test_plan_weight_conversion_ignores_disabled_unmatched_and_already_converted_paths() -> None:

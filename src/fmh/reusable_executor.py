@@ -159,6 +159,7 @@ class ReusableDeploymentExecutor:
         conversion = plan.get("weight_conversion") if isinstance(plan.get("weight_conversion"), dict) else None
         if conversion and conversion.get("required", True):
             self._run_weight_conversion(conversion)
+            self._mark_conversion_done(review_id, conversion)
         direct_worker_available = self._preflight(ip, session, worker_path, endpoint)
         self._write_table_values(plan, "deploying_table_values")
         self._stop_existing_vllm(ip, session, endpoint)
@@ -170,6 +171,21 @@ class ReusableDeploymentExecutor:
 
     def _run_weight_conversion(self, conversion: dict[str, Any]) -> None:
         run_weight_conversion(conversion, self.config.weight_conversion)
+
+    def _mark_conversion_done(self, review_id: str, conversion: dict[str, Any]) -> None:
+        review = self.store.get_review(review_id)
+        if not review:
+            return
+        output_path = str(conversion.get("output_path") or "")
+        self._update_task_status(
+            review,
+            {
+                "decision": "APPROVE",
+                "deploy_status": "conversion_done",
+                "summary": f"权重转换完成：{_short(output_path, 120)}",
+                "execution_summary": "转换完成，正在进入 tmux 启动 vLLM。",
+            },
+        )
 
     def _preflight(self, ip: str, session: str, worker_path: str, endpoint: str) -> bool:
         self._run_dev(f"tmux has-session -t {shlex.quote(session)}", timeout=20, check=True)
@@ -556,16 +572,54 @@ class ReusableDeploymentExecutor:
             )
 
         if deploy_status == "deploying":
-            deploying_detail = (
-                "正在转换权重，完成后启动 vLLM。"
-                if isinstance(plan.get("weight_conversion"), dict)
-                else "已进入 tmux，正在启动 vLLM。"
+            if isinstance(plan.get("weight_conversion"), dict):
+                conversion = plan["weight_conversion"]
+                state = task_status_with_stage(
+                    state,
+                    "convert",
+                    "进行中",
+                    f"正在转换到 {_short(str(conversion.get('output_path') or ''), 120)}。",
+                    title=title,
+                    source_chat_id=source_chat_id,
+                    source_message_id=message_id,
+                    model_id=model_id,
+                    model=model,
+                    worker=worker,
+                    address=address,
+                )
+            else:
+                state = task_status_with_stage(
+                    state,
+                    "execute",
+                    "进行中",
+                    "已进入 tmux，正在启动 vLLM。",
+                    title=title,
+                    source_chat_id=source_chat_id,
+                    source_message_id=message_id,
+                    model_id=model_id,
+                    model=model,
+                    worker=worker,
+                    address=address,
+                )
+        elif deploy_status == "conversion_done":
+            state = task_status_with_stage(
+                state,
+                "convert",
+                "完成",
+                str(decision.get("summary") or "权重转换完成。"),
+                title=title,
+                source_chat_id=source_chat_id,
+                source_message_id=message_id,
+                model_id=model_id,
+                model=model,
+                worker=worker,
+                address=address,
             )
             state = task_status_with_stage(
                 state,
                 "execute",
                 "进行中",
-                deploying_detail,
+                str(decision.get("execution_summary") or "转换完成，正在进入 tmux 启动 vLLM。"),
                 title=title,
                 source_chat_id=source_chat_id,
                 source_message_id=message_id,
@@ -600,9 +654,14 @@ class ReusableDeploymentExecutor:
             else:
                 state = task_status_with_stage(state, "document", "完成", "已回填已部署模型文档。", endpoint=endpoint)
         elif deploy_status in {"failed", "deploy_failed"}:
+            failed_stage = "execute"
+            if isinstance(plan.get("weight_conversion"), dict):
+                convert_stage = stages.get("convert") if isinstance(stages.get("convert"), dict) else {}
+                if str(convert_stage.get("status") or "") != "完成":
+                    failed_stage = "convert"
             state = task_status_with_stage(
                 state,
-                "execute",
+                failed_stage,
                 "失败",
                 execution_summary,
                 title=title,

@@ -4,11 +4,12 @@ from typing import Any
 
 from fmh.time_utils import utc_now_iso
 
-STAGE_ORDER = ("detect", "codex", "execute", "document")
-STATE_STAGE_ORDER = ("detect", "codex", "execute", "document", "todo")
+STAGE_ORDER = ("detect", "codex", "convert", "execute", "document")
+STATE_STAGE_ORDER = ("detect", "codex", "convert", "execute", "document", "todo")
 STAGE_LABELS = {
     "detect": "任务检测",
     "codex": "Codex意见",
+    "convert": "权重转换",
     "execute": "执行情况",
     "document": "文档回填",
 }
@@ -200,7 +201,7 @@ def _template(stages: dict[str, Any], deploy_status: str = "") -> str:
         return "red"
     if deploy_status == "已部署":
         return "green"
-    if deploy_status == "vLLM启动中":
+    if deploy_status in {"权重转换中", "vLLM启动中"}:
         return "blue"
     if deploy_status == "准备中":
         return "orange"
@@ -220,6 +221,8 @@ def _next_deploy_status(stage: str, status: str, current: object) -> str:
         return "需人工"
     if stage in {"detect", "codex"}:
         return "准备中"
+    if stage == "convert" and status == "进行中":
+        return "权重转换中"
     if stage == "execute" and status == "进行中":
         return "vLLM启动中"
     if (stage == "execute" and status == "完成") or (stage == "document" and status == "完成"):
@@ -294,6 +297,7 @@ def _action_button(review_id: str, decision: str, text: str, button_type: str) -
 def _status_color(status: str) -> str:
     return {
         "准备中": "orange",
+        "权重转换中": "blue",
         "vLLM启动中": "blue",
         "已部署": "green",
         "错误": "red",

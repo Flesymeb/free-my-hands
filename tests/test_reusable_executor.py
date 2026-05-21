@@ -305,6 +305,53 @@ def test_executor_keeps_review_execution_and_todo_details_separate(tmp_path) -> 
     assert "todo" not in stages
 
 
+def test_executor_shows_weight_conversion_as_separate_card_stage(tmp_path) -> None:
+    fake = FakeFeishuClient()
+    config = AppConfig(
+        feishu=FeishuConfig(default_chat_id="oc_source"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    executor = ReusableDeploymentExecutor(config, store, fake)  # type: ignore[arg-type]
+    review = _review_payload()
+    review["payload"]["plan"]["weight_conversion"] = {  # type: ignore[index]
+        "input_path": "/mnt/gpfs/team/iter_1",
+        "output_path": "/mnt/gpfs/team/manual_hf_name",
+        "original_weight_path": "/mnt/shared/team/iter_1",
+        "output_override": "manual_hf_name",
+        "detected_format": "distcp",
+        "required": True,
+    }
+
+    executor._send_card(  # noqa: SLF001
+        review,
+        {
+            "decision": "APPROVE",
+            "deploy_status": "deploying",
+            "summary": "审核通过：复用条件检查通过。",
+            "approval_summary": "审核通过：复用条件检查通过。",
+        },
+    )
+    executor._send_card(  # noqa: SLF001
+        review,
+        {
+            "decision": "APPROVE",
+            "deploy_status": "conversion_done",
+            "summary": "权重转换完成：/mnt/gpfs/team/manual_hf_name",
+            "execution_summary": "转换完成，正在进入 tmux 启动 vLLM。",
+        },
+    )
+
+    state = store.get_task_status("todo:task_1")
+    stages = state["stages"]
+    rendered = str(fake.updated_cards[-1][1])
+    assert stages["convert"]["status"] == "完成"
+    assert stages["execute"]["status"] == "进行中"
+    assert state["deploy_status"] == "vLLM启动中"
+    assert "权重转换" in rendered
+    assert "执行情况" in rendered
+
+
 def test_executor_notifies_post_deploy_bot_after_success(tmp_path) -> None:
     fake = FakeFeishuClient()
     config = AppConfig(
