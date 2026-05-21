@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from fmh.config import AppConfig, ApprovalConfig, FeishuConfig, PostDeployNotifyConfig, ReusableWorkersConfig, StorageConfig
+from fmh.config import (
+    AppConfig,
+    ApprovalConfig,
+    FeishuConfig,
+    PostDeployNotifyConfig,
+    ReusableWorkersConfig,
+    StorageConfig,
+    WeightConversionConfig,
+)
 from fmh.reusable_executor import (
     RemoteResult,
     ReusableDeploymentExecutor,
@@ -373,6 +381,64 @@ def test_execute_writes_deploying_marker_before_stopping_worker(tmp_path) -> Non
 
     assert order == ["preflight", "write:deploying_table_values", "stop", "send", "wait"]
     assert result == {"worker": "192.0.2.2", "model_id": "model-a", "endpoint": "http://192.0.2.2:8000"}
+
+
+def test_execute_runs_weight_conversion_before_worker_preflight(tmp_path) -> None:
+    order: list[str] = []
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        weight_conversion=WeightConversionConfig(enabled=True, host="converter", conda_env="env", script_path="/trans.sh"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+
+    class RecordingExecutor(ReusableDeploymentExecutor):
+        def _run_weight_conversion(self, conversion: dict[str, Any]) -> None:
+            order.append(f"convert:{conversion['output_path']}")
+
+        def _preflight(self, ip: str, session: str, worker_path: str, endpoint: str) -> bool:
+            order.append("preflight")
+            return True
+
+        def _write_table_values(self, plan: dict[str, Any], key: str) -> None:
+            order.append(f"write:{key}")
+
+        def _stop_existing_vllm(self, ip: str, session: str, endpoint: str) -> None:
+            order.append("stop")
+
+        def _send_vllm_command(self, review_id: str, session: str, vllm_command: str) -> None:
+            order.append("send")
+
+        def _wait_until_serving(self, session: str, endpoint: str, model_id: str) -> None:
+            order.append("wait")
+
+    executor = RecordingExecutor(config, store, FakeFeishuClient())  # type: ignore[arg-type]
+
+    result = executor._execute(  # noqa: SLF001
+        "rvw-test",
+        {
+            "row": {"ip": "192.0.2.2"},
+            "path": {"model_id": "hf_iter_1", "worker_path": "/mnt/gpfs/team/hf_iter_1"},
+            "tmux_session_guess": "ssh_4_gpu_2_2",
+            "vllm_command": "python -m vllm.entrypoints.openai.api_server",
+            "deploying_table_values": {"模型": "team/hf_iter_1（部署中）"},
+            "weight_conversion": {
+                "input_path": "/mnt/gpfs/team/iter_1",
+                "output_path": "/mnt/gpfs/team/hf_iter_1",
+                "original_weight_path": "/mnt/shared/team/iter_1",
+                "required": True,
+            },
+        },
+    )
+
+    assert order == [
+        "convert:/mnt/gpfs/team/hf_iter_1",
+        "preflight",
+        "write:deploying_table_values",
+        "stop",
+        "send",
+        "wait",
+    ]
+    assert result == {"worker": "192.0.2.2", "model_id": "hf_iter_1", "endpoint": "http://192.0.2.2:8000"}
 
 
 def test_execute_skips_restart_when_target_model_is_already_serving(tmp_path) -> None:

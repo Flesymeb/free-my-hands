@@ -11,6 +11,7 @@ tmux/SSH, updates Feishu cards/docs, and notifies follow-up owners or bots.
 - Reusable worker selection for idle rows and rows whose required tests are done.
 - Safety checks for running markers, fresh untested deployments, and same-worker conflicts.
 - Bounded parallel deployment across different workers.
+- Optional pre-deploy weight conversion for selected model path prefixes.
 - Manual group trigger through @/refresh-style messages.
 - Compact Feishu cards, retry/cancel handoff, and post-deploy notification.
 
@@ -61,6 +62,7 @@ task scan. If nothing new is found, the bot replies `目前无新任务`.
 - Keep `[runner].mode = "dry-run"` until templates and Feishu permissions are verified.
 - Use `[runner].mode = "tmux"` for real deployment.
 - Tune `[reusable_workers].max_parallel_deployments` to control concurrent deployments.
+- Configure `[weight_conversion]` when a model family needs conversion before vLLM deployment.
 - Configure human fallback mentions under `[approval]`; do not hard-code names in code.
 - Configure follow-up bot notification under `[post_deploy_notify]`.
 - Feishu setup references: [permissions](feishu/permissions.json) and

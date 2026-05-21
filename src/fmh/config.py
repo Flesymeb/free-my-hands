@@ -108,6 +108,17 @@ class ReusableWorkersConfig:
 
 
 @dataclass(frozen=True)
+class WeightConversionConfig:
+    enabled: bool = False
+    source_prefixes: list[str] = field(default_factory=list)
+    output_basename_prefix: str = "hf_"
+    host: str = ""
+    conda_env: str = ""
+    script_path: str = ""
+    timeout_sec: int = 7200
+
+
+@dataclass(frozen=True)
 class ApprovalConfig:
     fallback_chat_id: str = ""
     fallback_mention_open_id: str = ""
@@ -160,6 +171,7 @@ class AppConfig:
     vllm: VLLMConfig = field(default_factory=VLLMConfig)
     polling: PollingConfig = field(default_factory=PollingConfig)
     reusable_workers: ReusableWorkersConfig = field(default_factory=ReusableWorkersConfig)
+    weight_conversion: WeightConversionConfig = field(default_factory=WeightConversionConfig)
     approval: ApprovalConfig = field(default_factory=ApprovalConfig)
     post_deploy_notify: PostDeployNotifyConfig = field(default_factory=PostDeployNotifyConfig)
     codex_review: CodexReviewConfig = field(default_factory=CodexReviewConfig)
@@ -185,6 +197,7 @@ def _merge_config(config: AppConfig, raw: dict[str, Any]) -> AppConfig:
         vllm=replace(config.vllm, **raw.get("vllm", {})),
         polling=replace(config.polling, **raw.get("polling", {})),
         reusable_workers=replace(config.reusable_workers, **raw.get("reusable_workers", {})),
+        weight_conversion=replace(config.weight_conversion, **raw.get("weight_conversion", {})),
         approval=replace(config.approval, **raw.get("approval", {})),
         post_deploy_notify=replace(config.post_deploy_notify, **raw.get("post_deploy_notify", {})),
         codex_review=replace(config.codex_review, **raw.get("codex_review", {})),
@@ -196,6 +209,7 @@ def _apply_env_overrides(config: AppConfig) -> AppConfig:
     storage = config.storage
     runner = config.runner
     reusable_workers = config.reusable_workers
+    weight_conversion = config.weight_conversion
     approval = config.approval
 
     if os.getenv("FEISHU_APP_ID"):
@@ -223,6 +237,15 @@ def _apply_env_overrides(config: AppConfig) -> AppConfig:
         reusable_workers = replace(reusable_workers, tutorial_doc_token=os.environ["FMH_TUTORIAL_DOC_TOKEN"])
     if os.getenv("FMH_REUSABLE_WORKERS_DEV_HOST"):
         reusable_workers = replace(reusable_workers, dev_host=os.environ["FMH_REUSABLE_WORKERS_DEV_HOST"])
+    if os.getenv("FMH_WEIGHT_CONVERSION_ENABLED"):
+        enabled = os.environ["FMH_WEIGHT_CONVERSION_ENABLED"].strip().lower() in {"1", "true", "yes", "on"}
+        weight_conversion = replace(weight_conversion, enabled=enabled)
+    if os.getenv("FMH_WEIGHT_CONVERSION_HOST"):
+        weight_conversion = replace(weight_conversion, host=os.environ["FMH_WEIGHT_CONVERSION_HOST"])
+    if os.getenv("FMH_WEIGHT_CONVERSION_CONDA_ENV"):
+        weight_conversion = replace(weight_conversion, conda_env=os.environ["FMH_WEIGHT_CONVERSION_CONDA_ENV"])
+    if os.getenv("FMH_WEIGHT_CONVERSION_SCRIPT_PATH"):
+        weight_conversion = replace(weight_conversion, script_path=os.environ["FMH_WEIGHT_CONVERSION_SCRIPT_PATH"])
     if os.getenv("FMH_APPROVAL_FALLBACK_CHAT_ID"):
         approval = replace(approval, fallback_chat_id=os.environ["FMH_APPROVAL_FALLBACK_CHAT_ID"])
     if os.getenv("FMH_APPROVAL_MENTION_OPEN_ID"):
@@ -250,6 +273,7 @@ def _apply_env_overrides(config: AppConfig) -> AppConfig:
         storage=storage,
         runner=runner,
         reusable_workers=reusable_workers,
+        weight_conversion=weight_conversion,
         approval=approval,
         post_deploy_notify=post_deploy_notify,
     )

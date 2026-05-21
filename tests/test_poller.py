@@ -6,7 +6,16 @@ import subprocess
 import time
 from typing import Any
 
-from fmh.config import AppConfig, FeishuConfig, PollingConfig, ReusableWorkersConfig, RunnerConfig, StorageConfig, VLLMConfig
+from fmh.config import (
+    AppConfig,
+    FeishuConfig,
+    PollingConfig,
+    ReusableWorkersConfig,
+    RunnerConfig,
+    StorageConfig,
+    VLLMConfig,
+    WeightConversionConfig,
+)
 from fmh.models import RequestStatus
 from fmh.orchestrator import DeploymentOrchestrator
 from fmh.poller import FeishuPollingWorker, _task_item_status_key
@@ -934,6 +943,105 @@ def test_reusable_todo_multiple_new_subtasks_reserve_distinct_rows(tmp_path) -> 
     assert selected_ips == {"192.0.2.14", "192.0.2.15"}
     assert len(status_message_ids) == 2
     assert len(status_task_keys) == 2
+
+
+def test_reusable_todo_converts_matching_weight_path_before_planning(tmp_path) -> None:
+    doc_markdown = """<table><tbody>
+<tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>
+<tr><td></td><td></td><td>192\\.0\\.2\\.14（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
+</tbody></table>"""
+    raw_path = "/mnt/shared-storage-user/ma4agi-gpu/zhangchen/vita/model_ckpt/run/iter_0000005"
+    converted_path = "/mnt/gpfs/ma4agi-gpu/zhangchen/vita/model_ckpt/run/hf_iter_0000005"
+    fake = FakeFeishuClient(
+        [],
+        task={"guid": "task_convert", "summary": "convert deploy"},
+        subtasks=[{"guid": "sub_1", "summary": raw_path, "description": ""}],
+        doc_markdown=doc_markdown,
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True, wake_review_auditor_on_submit=False),
+        reusable_workers=ReusableWorkersConfig(
+            enabled=True,
+            source_model_prefix="/mnt/shared-storage-user/ma4agi-gpu",
+            worker_model_prefix="/mnt/gpfs/ma4agi-gpu",
+            table_model_prefix="/mnt/gpfs/ma4agi-gpu",
+        ),
+        weight_conversion=WeightConversionConfig(
+            enabled=True,
+            source_prefixes=["/mnt/gpfs/ma4agi-gpu/zhangchen"],
+        ),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    stats, submitted_ids, failed = worker._process_task_subtasks(  # noqa: SLF001
+        "task_convert",
+        "todo:task_convert",
+        chat_id="oc_1",
+    )
+
+    reviews = store.list_reviews(limit=10)
+    review = reviews[0]
+    plan = review["payload"]["plan"]
+    context = review["payload"]["context"]
+    processed = store.get_processed_item("todo:task_convert", f"task_convert:sub_1:{converted_path}")
+    assert stats.submitted == 1
+    assert failed == 0
+    assert len(submitted_ids) == 1
+    assert processed is not None
+    assert plan["path"]["worker_path"] == converted_path
+    assert plan["path"]["model_id"] == "hf_iter_0000005"
+    assert plan["weight_conversion"]["input_path"] == raw_path.replace(
+        "/mnt/shared-storage-user/ma4agi-gpu",
+        "/mnt/gpfs/ma4agi-gpu",
+    )
+    assert plan["weight_conversion"]["output_path"] == converted_path
+    assert context["weight_conversion"] == plan["weight_conversion"]
+
+
+def test_reusable_todo_reserves_rows_from_other_inflight_reviews(tmp_path) -> None:
+    doc_markdown = """<table><tbody>
+<tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>
+<tr><td>old/a</td><td>a</td><td>192\\.0\\.2\\.14（4卡）</td><td></td><td></td><td></td><td>tau2\nvita</td><td></td></tr>
+<tr><td>old/b</td><td>b</td><td>192\\.0\\.2\\.15（4卡）</td><td></td><td></td><td></td><td>tau2\nvita</td><td></td></tr>
+</tbody></table>"""
+    fake = FakeFeishuClient(
+        [],
+        task={"guid": "task_next", "summary": "deploy next"},
+        subtasks=[{"guid": "sub_1", "summary": "/mnt/models/model-c", "description": ""}],
+        doc_markdown=doc_markdown,
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True, wake_review_auditor_on_submit=False),
+        reusable_workers=ReusableWorkersConfig(enabled=True),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.create_review(
+        "rvw-inflight",
+        "reuse_row_selected",
+        "192.0.2.14:model-a",
+        {"stage": "reuse_row_selected", "plan": {"row": {"row_index": 1, "ip": "192.0.2.14"}}},
+        status="deploying",
+    )
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    stats, submitted_ids, failed = worker._process_task_subtasks(  # noqa: SLF001
+        "task_next",
+        "todo:task_next",
+        chat_id="oc_1",
+    )
+
+    reviews = [review for review in store.list_reviews(limit=10) if review["review_id"] != "rvw-inflight"]
+    assert stats.submitted == 1
+    assert failed == 0
+    assert len(submitted_ids) == 1
+    assert reviews[0]["payload"]["plan"]["row"]["ip"] == "192.0.2.15"
 
 
 def test_reusable_review_notice_uses_source_chat_when_default_chat_differs(tmp_path) -> None:

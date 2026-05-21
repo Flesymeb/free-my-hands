@@ -27,6 +27,7 @@ from fmh.parser import ParseError, parse_deployment_request
 from fmh.reusable_workers import build_reusable_deployment_plan, parse_deployed_models_table
 from fmh.store import StateStore
 from fmh.task_status import task_status_card, task_status_with_stage
+from fmh.weight_conversion import plan_weight_conversion
 
 log = logging.getLogger(__name__)
 
@@ -376,6 +377,7 @@ class FeishuPollingWorker:
             return PollStats(scanned=1, failed=1), [], 1
 
         entries = _deployment_entries_from_task(parent, subtasks, self.config.polling.relative_weight_path_prefix)
+        entries = [_apply_weight_conversion_to_entry(entry, self.config) for entry in entries]
         if not entries:
             return PollStats(scanned=1, ignored=1), [], 0
 
@@ -552,6 +554,16 @@ class FeishuPollingWorker:
                 continue
             review = self.store.get_review(review_id)
             if not review:
+                continue
+            row = _review_plan_row(review)
+            row_index = _safe_int(row.get("row_index") if row else "")
+            if row_index:
+                reserved.add(row_index)
+        for review in self.store.list_reviews(limit=500):
+            if str(review.get("status") or "") not in {"pending", "codex_reviewing", "approved", "deploying"}:
+                continue
+            payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
+            if payload.get("stage") != "reuse_row_selected":
                 continue
             row = _review_plan_row(review)
             row_index = _safe_int(row.get("row_index") if row else "")
@@ -944,7 +956,8 @@ class FeishuPollingWorker:
             required_gpu_count=0,
             excluded_row_indices=reserved_row_indices,
         )
-        packet = make_reuse_plan_review(weight_path=entry["weight_path"], plan=plan, rows=rows)
+        conversion = entry.get("weight_conversion") if isinstance(entry.get("weight_conversion"), dict) else None
+        packet = make_reuse_plan_review(weight_path=entry["weight_path"], plan=plan, rows=rows, conversion=conversion)
         payload = packet.to_dict()
         if entry.get("reply_to_message_id"):
             payload.setdefault("context", {})["reply_to_message_id"] = str(entry["reply_to_message_id"])
@@ -1346,6 +1359,22 @@ def _deployment_entries_from_task(
                 }
             )
     return entries
+
+
+def _apply_weight_conversion_to_entry(entry: dict[str, Any], config: AppConfig) -> dict[str, Any]:
+    plan = plan_weight_conversion(
+        str(entry.get("weight_path") or ""),
+        config.weight_conversion,
+        config.reusable_workers,
+    )
+    if plan is None:
+        return entry
+    converted = dict(entry)
+    converted["original_weight_path"] = plan.original_weight_path
+    converted["weight_path"] = plan.output_path
+    converted["model_name"] = _model_id_from_weight_path(plan.output_path)
+    converted["weight_conversion"] = plan.to_dict()
+    return converted
 
 
 def _deployment_text_from_entry(entry: dict[str, Any]) -> str:

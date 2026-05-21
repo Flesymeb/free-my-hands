@@ -72,6 +72,17 @@ deploy_poll_interval_sec = 15
 # and deployed-model document writes remain serialized by the auditor.
 max_parallel_deployments = 2
 
+[weight_conversion]
+# Optional pre-deploy conversion for paths that need a separate checkpoint-to-HF step.
+# Matching is evaluated after source_model_prefix -> worker_model_prefix normalization.
+enabled = false
+source_prefixes = ["/mnt/gpfs/team/model_ckpt"]
+output_basename_prefix = "hf_"
+host = "converter-user@converter-host.example.com"
+conda_env = "converter-env"
+script_path = "/path/to/trans.sh"
+timeout_sec = 7200
+
 [approval]
 # Where Codex failures and manual approval cards are sent. Empty means fall back
 # to [feishu].default_chat_id.

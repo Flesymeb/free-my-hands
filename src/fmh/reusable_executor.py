@@ -18,6 +18,7 @@ from fmh.reusable_workers import is_reusable_worker_state
 from fmh.store import StateStore
 from fmh.task_status import task_status_card, task_status_with_stage
 from fmh.time_utils import utc_now_iso
+from fmh.weight_conversion import run_weight_conversion
 
 log = logging.getLogger(__name__)
 _DEPLOYED_DOC_WRITE_LOCK = threading.Lock()
@@ -155,6 +156,9 @@ class ReusableDeploymentExecutor:
             if model_id in served_ids:
                 return {"worker": ip, "model_id": model_id, "endpoint": endpoint}
 
+        conversion = plan.get("weight_conversion") if isinstance(plan.get("weight_conversion"), dict) else None
+        if conversion and conversion.get("required", True):
+            self._run_weight_conversion(conversion)
         direct_worker_available = self._preflight(ip, session, worker_path, endpoint)
         self._write_table_values(plan, "deploying_table_values")
         self._stop_existing_vllm(ip, session, endpoint)
@@ -163,6 +167,9 @@ class ReusableDeploymentExecutor:
         self._send_vllm_command(review_id, session, vllm_command)
         self._wait_until_serving(session, endpoint, model_id)
         return {"worker": ip, "model_id": model_id, "endpoint": endpoint}
+
+    def _run_weight_conversion(self, conversion: dict[str, Any]) -> None:
+        run_weight_conversion(conversion, self.config.weight_conversion)
 
     def _preflight(self, ip: str, session: str, worker_path: str, endpoint: str) -> bool:
         self._run_dev(f"tmux has-session -t {shlex.quote(session)}", timeout=20, check=True)
@@ -549,11 +556,16 @@ class ReusableDeploymentExecutor:
             )
 
         if deploy_status == "deploying":
+            deploying_detail = (
+                "正在转换权重，完成后启动 vLLM。"
+                if isinstance(plan.get("weight_conversion"), dict)
+                else "已进入 tmux，正在启动 vLLM。"
+            )
             state = task_status_with_stage(
                 state,
                 "execute",
                 "进行中",
-                "已进入 tmux，正在启动 vLLM。",
+                deploying_detail,
                 title=title,
                 source_chat_id=source_chat_id,
                 source_message_id=message_id,

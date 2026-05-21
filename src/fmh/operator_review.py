@@ -65,6 +65,7 @@ def make_reuse_plan_review(
     weight_path: str,
     plan: ReusableDeploymentPlan,
     rows: list[DeployedModelRow],
+    conversion: dict[str, Any] | None = None,
 ) -> ReviewPacket:
     reusable_rows = [row.to_dict() for row in rows if row.ip and row.gpu_count]
     context = {
@@ -73,6 +74,8 @@ def make_reuse_plan_review(
         "candidate_rows": reusable_rows,
         "path": plan.path.to_dict(),
     }
+    if conversion:
+        context["weight_conversion"] = conversion
     checks = [
         "本阶段以已部署模型文档为准入依据：空闲行，或 required_finished_tasks 均已完成且没有 running 标记，即可批准复用计划。",
         "确认 selected_row 的已经测试完的任务包含 tau2 和 vita，且没有 running 标记。",
@@ -93,6 +96,12 @@ def make_reuse_plan_review(
         "启动后：在 test-model 窗口检查 /v1/models 与模型 id 是否匹配。",
         "测试通过后：写回 final_table_values，并清空已经测试完的任务列。",
     ]
+    if conversion:
+        checks.append("确认需要先执行权重转换，部署路径应使用转换后的 output_path。")
+        next_actions.insert(0, "先在转换机执行权重转换；转换成功后再停旧 vLLM。")
+    plan_payload = plan.to_dict()
+    if conversion:
+        plan_payload["weight_conversion"] = conversion
     packet = _packet(
         stage=ReviewStage.REUSE_ROW_SELECTED,
         title="复用常驻 worker 部署审核",
@@ -100,7 +109,7 @@ def make_reuse_plan_review(
         severity="warning",
         summary=f"计划复用 {plan.row.ip} 部署 {plan.path.model_id}",
         context=context,
-        plan=plan.to_dict(),
+        plan=plan_payload,
         checks=checks,
         risks=risks,
         next_actions=next_actions,
