@@ -1052,6 +1052,125 @@ def test_reusable_todo_uses_manual_conversion_output_name(tmp_path) -> None:
     assert plan["weight_conversion"]["output_override"] == "manual_hf_name"
 
 
+def test_reusable_todo_uses_inline_parenthesized_conversion_output_name(tmp_path) -> None:
+    doc_markdown = """<table><tbody>
+<tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>
+<tr><td></td><td></td><td>192\\.0\\.2\\.14（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
+</tbody></table>"""
+    raw_path = "/mnt/shared-storage-user/ma4agi-gpu/team_alpha/vita/model_ckpt/run/iter_0000005"
+    converted_path = "/mnt/gpfs/ma4agi-gpu/team_alpha/vita/model_ckpt/run/manual_hf_name"
+    fake = FakeFeishuClient(
+        [],
+        task={"guid": "task_inline_named_convert", "summary": "convert inline named deploy"},
+        subtasks=[{"guid": "sub_1", "summary": f"(manual_hf_name){raw_path}", "description": ""}],
+        doc_markdown=doc_markdown,
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True, wake_review_auditor_on_submit=False),
+        reusable_workers=ReusableWorkersConfig(
+            enabled=True,
+            source_model_prefix="/mnt/shared-storage-user/ma4agi-gpu",
+            worker_model_prefix="/mnt/gpfs/ma4agi-gpu",
+            table_model_prefix="/mnt/gpfs/ma4agi-gpu",
+        ),
+        weight_conversion=WeightConversionConfig(
+            enabled=True,
+            source_prefixes=["/mnt/gpfs/ma4agi-gpu/team_alpha"],
+        ),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    stats, submitted_ids, failed = worker._process_task_subtasks(  # noqa: SLF001
+        "task_inline_named_convert",
+        "todo:task_inline_named_convert",
+        chat_id="oc_1",
+    )
+
+    reviews = store.list_reviews(limit=10)
+    plan = reviews[0]["payload"]["plan"]
+    processed = store.get_processed_item(
+        "todo:task_inline_named_convert",
+        f"task_inline_named_convert:sub_1:{converted_path}",
+    )
+    assert stats.submitted == 1
+    assert failed == 0
+    assert len(submitted_ids) == 1
+    assert processed is not None
+    assert plan["path"]["worker_path"] == converted_path
+    assert plan["path"]["model_id"] == "manual_hf_name"
+    assert plan["weight_conversion"]["original_weight_path"] == raw_path
+    assert plan["weight_conversion"]["input_path"] == raw_path.replace(
+        "/mnt/shared-storage-user/ma4agi-gpu",
+        "/mnt/gpfs/ma4agi-gpu",
+    )
+    assert plan["weight_conversion"]["output_path"] == converted_path
+    assert plan["weight_conversion"]["output_override"] == "manual_hf_name"
+
+
+def test_reusable_todo_uses_per_line_inline_conversion_output_names(tmp_path) -> None:
+    doc_markdown = """<table><tbody>
+<tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>
+<tr><td></td><td></td><td>192\\.0\\.2\\.14（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td>192\\.0\\.2\\.15（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
+</tbody></table>"""
+    raw_a = "/mnt/shared-storage-user/ma4agi-gpu/team_alpha/vita/model_ckpt/run_a/iter_0000005"
+    raw_b = "/mnt/shared-storage-user/ma4agi-gpu/team_alpha/vita/model_ckpt/run_b/iter_0000006"
+    converted_a = "/mnt/gpfs/ma4agi-gpu/team_alpha/vita/model_ckpt/run_a/manual_hf_a"
+    converted_b = "/mnt/gpfs/ma4agi-gpu/team_alpha/vita/model_ckpt/run_b/manual_hf_b"
+    fake = FakeFeishuClient(
+        [],
+        task={"guid": "task_inline_named_multi", "summary": "convert inline named multi"},
+        subtasks=[
+            {
+                "guid": "sub_1",
+                "summary": "\n".join([f"(manual_hf_a){raw_a}", f"（manual_hf_b）{raw_b}"]),
+                "description": "",
+            }
+        ],
+        doc_markdown=doc_markdown,
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True, wake_review_auditor_on_submit=False),
+        reusable_workers=ReusableWorkersConfig(
+            enabled=True,
+            source_model_prefix="/mnt/shared-storage-user/ma4agi-gpu",
+            worker_model_prefix="/mnt/gpfs/ma4agi-gpu",
+            table_model_prefix="/mnt/gpfs/ma4agi-gpu",
+        ),
+        weight_conversion=WeightConversionConfig(
+            enabled=True,
+            source_prefixes=["/mnt/gpfs/ma4agi-gpu/team_alpha"],
+        ),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    stats, submitted_ids, failed = worker._process_task_subtasks(  # noqa: SLF001
+        "task_inline_named_multi",
+        "todo:task_inline_named_multi",
+        chat_id="oc_1",
+    )
+
+    plans = [review["payload"]["plan"] for review in store.list_reviews(limit=10)]
+    conversion_by_path = {
+        plan["path"]["worker_path"]: plan["weight_conversion"]
+        for plan in plans
+    }
+    assert stats.submitted == 2
+    assert failed == 0
+    assert len(submitted_ids) == 2
+    assert set(conversion_by_path) == {converted_a, converted_b}
+    assert conversion_by_path[converted_a]["output_override"] == "manual_hf_a"
+    assert conversion_by_path[converted_b]["output_override"] == "manual_hf_b"
+
+
 def test_reusable_todo_reserves_rows_from_other_inflight_reviews(tmp_path) -> None:
     doc_markdown = """<table><tbody>
 <tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>

@@ -1350,13 +1350,14 @@ def _deployment_entries_from_task(
             weight_path = _extract_weight_path_from_line(line, relative_prefix)
             if not weight_path:
                 continue
+            line_conversion_output_override = _extract_inline_conversion_output_override(line) or conversion_output_override
             model_name = _model_name_from_task_line(line, weight_path, subtask, parent_name)
             entries.append(
                 {
                     "subtask_guid": subtask_guid or hashlib.sha1(line.encode("utf-8")).hexdigest()[:12],
                     "weight_path": weight_path,
                     "model_name": model_name,
-                    "conversion_output_override": conversion_output_override,
+                    "conversion_output_override": line_conversion_output_override,
                     "raw_line": line,
                     "parent": parent,
                     "subtask": subtask,
@@ -1465,6 +1466,9 @@ def _extract_weight_path_from_line(line: str, relative_prefix: str) -> str:
     explicit = _deployment_path_key_match(line)
     if explicit:
         return explicit.group("path").strip("`'\"，,")
+    inline_named = _inline_conversion_output_match(line)
+    if inline_named:
+        return inline_named.group("path").strip("`'\"，,")
     storage = re.search(
         r"(?:^|\s)(?P<path>(?:/|s3://|oss://|hdfs://|hf://|gs://)[^\s`'\"，,]+)",
         line,
@@ -1494,6 +1498,23 @@ def _extract_conversion_output_override(text: str) -> str:
 
 def _is_conversion_output_override_line(line: str) -> bool:
     return _conversion_output_override_match(line) is not None
+
+
+def _inline_conversion_output_match(line: str) -> re.Match[str] | None:
+    return re.search(
+        (
+            r"(?:^|\s)[(（](?P<value>[^()（）/\\\s]+)[)）]\s*"
+            r"(?P<path>(?:/|s3://|oss://|hdfs://|hf://|gs://)[^\s`'\"，,]+)"
+        ),
+        line,
+    )
+
+
+def _extract_inline_conversion_output_override(line: str) -> str:
+    match = _inline_conversion_output_match(line)
+    if not match:
+        return ""
+    return match.group("value").strip("`'\"，,")
 
 
 def _conversion_output_override_match(line: str) -> re.Match[str] | None:
