@@ -353,6 +353,61 @@ def test_executor_shows_weight_conversion_as_separate_card_stage(tmp_path) -> No
     assert "执行情况" in rendered
 
 
+def test_executor_keeps_conversion_done_path_tail_visible(tmp_path) -> None:
+    fake = FakeFeishuClient()
+    config = AppConfig(
+        feishu=FeishuConfig(default_chat_id="oc_source"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    review = _review_payload()
+    store.create_review(
+        str(review["review_id"]),
+        str(review["payload"]["stage"]),  # type: ignore[index]
+        str(review["subject_id"]),
+        review["payload"],  # type: ignore[arg-type]
+        status="deploying",
+    )
+    executor = ReusableDeploymentExecutor(config, store, fake)  # type: ignore[arg-type]
+    output_path = (
+        "/mnt/gpfs/ma4agi-gpu/team_alpha/project/model_ckpt/run_group_0514_1280/"
+        "example-run-0514-1280-20260520_031524/hf_iter_0000005"
+    )
+
+    executor._mark_conversion_done("rvw-test", {"output_path": output_path})  # noqa: SLF001
+
+    rendered = str(fake.updated_cards[-1][1])
+    assert "权重转换完成：.../" in rendered
+    assert "hf\\\\_iter\\\\_0000005" in rendered
+    assert "run_group_05…" not in rendered
+
+
+def test_executor_compacts_policy_approval_summary_for_cards(tmp_path) -> None:
+    fake = FakeFeishuClient()
+    config = AppConfig(
+        feishu=FeishuConfig(default_chat_id="oc_source"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    executor = ReusableDeploymentExecutor(config, store, fake)  # type: ignore[arg-type]
+    review = _review_payload()
+
+    executor._send_card(  # noqa: SLF001
+        review,
+        {
+            "decision": "APPROVE",
+            "deploy_status": "deploying",
+            "approval_summary": (
+                "已部署模型文档满足复用条件：空闲行或 required tasks 已完成且无 running 标记，"
+                "路径、tmux session 和卡数检查通过。"
+            ),
+        },
+    )
+
+    state = store.get_task_status("todo:task_1")
+    assert state["stages"]["codex"]["detail"] == "复用条件通过；worker、路径、tmux session、卡数检查通过。"
+
+
 def test_executor_notifies_post_deploy_bot_after_success(tmp_path) -> None:
     fake = FakeFeishuClient()
     config = AppConfig(

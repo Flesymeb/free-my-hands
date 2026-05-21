@@ -182,7 +182,7 @@ class ReusableDeploymentExecutor:
             {
                 "decision": "APPROVE",
                 "deploy_status": "conversion_done",
-                "summary": f"权重转换完成：{_short(output_path, 120)}",
+                "summary": f"权重转换完成：{output_path}",
                 "execution_summary": "转换完成，正在进入 tmux 启动 vLLM。",
             },
         )
@@ -565,10 +565,7 @@ class ReusableDeploymentExecutor:
             str(decision.get("execution_summary") or decision.get("summary") or decision.get("error") or ""),
             180,
         )
-        approval_summary = _short(
-            str(decision.get("approval_summary") or decision.get("summary") or payload.get("summary") or "审核通过。"),
-            160,
-        )
+        approval_summary = _approval_card_summary(decision, payload)
         title = str(context.get("task_title") or state.get("title") or payload.get("title") or "")
         review_id = str(review.get("review_id") or "")
 
@@ -1031,6 +1028,13 @@ def _timeout_output_to_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
+
+def _approval_card_summary(decision: dict[str, Any], payload: dict[str, Any]) -> str:
+    raw = str(decision.get("approval_summary") or decision.get("summary") or payload.get("summary") or "审核通过。")
+    if "已部署模型文档满足复用条件" in raw:
+        return "复用条件通过；worker、路径、tmux session、卡数检查通过。"
+    return _short(raw, 160)
 
 
 def _md_escape(value: str) -> str:
