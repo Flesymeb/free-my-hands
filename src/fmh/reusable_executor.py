@@ -182,7 +182,7 @@ class ReusableDeploymentExecutor:
             {
                 "decision": "APPROVE",
                 "deploy_status": "conversion_done",
-                "summary": f"权重转换完成：{output_path}",
+                "summary": _conversion_done_summary(output_path),
                 "execution_summary": "转换完成，正在进入 tmux 启动 vLLM。",
             },
         )
@@ -623,7 +623,7 @@ class ReusableDeploymentExecutor:
                 state,
                 "convert",
                 "完成",
-                str(decision.get("summary") or "权重转换完成。"),
+                _conversion_card_summary(str(decision.get("summary") or "权重转换完成。")),
                 title=title,
                 source_chat_id=source_chat_id,
                 source_message_id=message_id,
@@ -650,7 +650,7 @@ class ReusableDeploymentExecutor:
                 state,
                 "execute",
                 "完成",
-                execution_summary or "模型已通过 /v1/models 检查。",
+                "vLLM 已通过 /v1/models 校验。",
                 title=title,
                 source_chat_id=source_chat_id,
                 source_message_id=message_id,
@@ -1035,6 +1035,24 @@ def _approval_card_summary(decision: dict[str, Any], payload: dict[str, Any]) ->
     if "已部署模型文档满足复用条件" in raw:
         return "复用条件通过；worker、路径、tmux session、卡数检查通过。"
     return _short(raw, 160)
+
+
+def _conversion_done_summary(output_path: str) -> str:
+    output_name = output_path.strip().rstrip("/").rsplit("/", 1)[-1]
+    if output_name:
+        return f"权重转换完成：{output_name}"
+    return "权重转换完成。"
+
+
+def _conversion_card_summary(summary: str) -> str:
+    text = str(summary or "").strip()
+    marker = "权重转换完成："
+    if marker in text:
+        _, value = text.split(marker, 1)
+        output_name = value.strip().rstrip("/").rsplit("/", 1)[-1]
+        if output_name:
+            return f"{marker}{output_name}"
+    return text or "权重转换完成。"
 
 
 def _md_escape(value: str) -> str:

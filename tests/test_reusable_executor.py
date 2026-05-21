@@ -302,7 +302,7 @@ def test_executor_keeps_review_execution_and_todo_details_separate(tmp_path) -> 
     stages = state["stages"]
     assert stages["codex"]["detail"] == "审核通过：复用条件检查通过。"
     assert "真实部署完成" not in stages["codex"]["detail"]
-    assert stages["execute"]["detail"] == "真实部署完成：model-a 已在 http://192.0.2.2:8000 可见。"
+    assert stages["execute"]["detail"] == "vLLM 已通过 /v1/models 校验。"
     assert "todo" not in stages
 
 
@@ -353,7 +353,7 @@ def test_executor_shows_weight_conversion_as_separate_card_stage(tmp_path) -> No
     assert "执行情况" in rendered
 
 
-def test_executor_keeps_conversion_done_path_tail_visible(tmp_path) -> None:
+def test_executor_uses_compact_conversion_done_detail(tmp_path) -> None:
     fake = FakeFeishuClient()
     config = AppConfig(
         feishu=FeishuConfig(default_chat_id="oc_source"),
@@ -377,9 +377,34 @@ def test_executor_keeps_conversion_done_path_tail_visible(tmp_path) -> None:
     executor._mark_conversion_done("rvw-test", {"output_path": output_path})  # noqa: SLF001
 
     rendered = str(fake.updated_cards[-1][1])
-    assert "权重转换完成：.../" in rendered
-    assert "hf\\\\_iter\\\\_0000005" in rendered
-    assert "run_group_05…" not in rendered
+    assert "权重转换完成：hf\\\\_iter\\\\_0000005" in rendered
+    assert "run_group_0514_1280" not in rendered
+
+
+def test_executor_uses_compact_success_detail(tmp_path) -> None:
+    fake = FakeFeishuClient()
+    config = AppConfig(
+        feishu=FeishuConfig(default_chat_id="oc_source"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    executor = ReusableDeploymentExecutor(config, store, fake)  # type: ignore[arg-type]
+    review = _review_payload()
+
+    executor._send_card(  # noqa: SLF001
+        review,
+        {
+            "decision": "APPROVE",
+            "deploy_status": "deployed",
+            "execution_summary": "真实部署完成：model-a 已在 http://100.96.163.102:8000 可见。",
+            "endpoint": "http://100.96.163.102:8000",
+            "worker": "100.96.163.102",
+            "model_id": "model-a",
+        },
+    )
+
+    state = store.get_task_status("todo:task_1")
+    assert state["stages"]["execute"]["detail"] == "vLLM 已通过 /v1/models 校验。"
 
 
 def test_executor_compacts_policy_approval_summary_for_cards(tmp_path) -> None:
