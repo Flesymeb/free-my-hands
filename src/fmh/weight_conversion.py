@@ -258,8 +258,12 @@ OUTPUT_DIR={shlex.quote(output_path)}
 
 test -f "$SCRIPT"
 if [ -d "$OUTPUT_DIR" ] && [ -n "$(find "$OUTPUT_DIR" -mindepth 1 -print -quit 2>/dev/null)" ]; then
-  echo "conversion output already exists: $OUTPUT_DIR"
-  exit 0
+  if [ -f "$OUTPUT_DIR/config.json" ] && [ -n "$(find "$OUTPUT_DIR" -maxdepth 1 -type f \\( -name '*.safetensors' -o -name 'model.safetensors.index.json' -o -name 'pytorch_model*.bin' \\) -print -quit 2>/dev/null)" ]; then
+    echo "conversion output already exists: $OUTPUT_DIR"
+    exit 0
+  fi
+  echo "conversion output exists but is not a complete HF checkpoint: $OUTPUT_DIR" >&2
+  exit 2
 fi
 
 python3 - "$SCRIPT" "$INPUT_DIR" "$OUTPUT_DIR" <<'PY'

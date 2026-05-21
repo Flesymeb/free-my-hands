@@ -186,5 +186,7 @@ def test_run_weight_conversion_patches_remote_script_and_invokes_ssh(monkeypatch
     assert "CONDA_ENV=smile" in script
     assert "INPUT_DIR=/mnt/gpfs/team/run/iter_1" in script
     assert "OUTPUT_DIR=/mnt/gpfs/team/run/hf_iter_1" in script
+    assert "conversion output exists but is not a complete HF checkpoint" in script
+    assert "model.safetensors.index.json" in script
     assert "--input-dir" in script
     assert "--output-dir" in script
