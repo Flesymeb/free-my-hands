@@ -1661,7 +1661,10 @@ def _task_title(parent: dict[str, Any], task_id: str) -> str:
 
 
 def _task_entry_key(task_id: str, entry: dict[str, Any]) -> str:
-    return f"{task_id}:{entry['subtask_guid']}:{entry['weight_path']}"
+    path = str(entry.get("weight_path") or "")
+    if entry.get("resolved_weight_path") and entry.get("original_weight_path"):
+        path = str(entry["original_weight_path"])
+    return f"{task_id}:{entry['subtask_guid']}:{path}"
 
 
 def _task_item_status_key(task_key: str, item_key: str) -> str:

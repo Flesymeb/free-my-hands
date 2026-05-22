@@ -1214,7 +1214,7 @@ def test_reusable_todo_resolves_hf_checkpoint_child_but_keeps_parent_model_id(tm
     plan = store.list_reviews(limit=10)[0]["payload"]["plan"]
     processed = store.get_processed_item(
         "todo:task_resolve_child",
-        f"task_resolve_child:sub_1:{resolved_path}",
+        f"task_resolve_child:sub_1:{raw_path}",
     )
     assert stats.submitted == 1
     assert failed == 0
@@ -1226,6 +1226,25 @@ def test_reusable_todo_resolves_hf_checkpoint_child_but_keeps_parent_model_id(tm
     assert plan["final_table_values"]["模型id"] == "0521-1-preview-c1"
     assert "--served-model-name 0521-1-preview-c1" in plan["vllm_command"]
     assert f"--model {resolved_path}" in plan["vllm_command"]
+    assert (
+        store.get_processed_item(
+            "todo:task_resolve_child",
+            f"task_resolve_child:sub_1:{resolved_path}",
+        )
+        is None
+    )
+
+    second_stats, second_submitted_ids, second_failed = worker._process_task_subtasks(  # noqa: SLF001
+        "task_resolve_child",
+        "todo:task_resolve_child",
+        chat_id="oc_1",
+    )
+
+    assert second_stats.submitted == 0
+    assert second_stats.ignored == 1
+    assert second_submitted_ids == []
+    assert second_failed == 0
+    assert len(store.list_reviews(limit=10)) == 1
 
 
 def test_reusable_todo_reserves_rows_from_other_inflight_reviews(tmp_path) -> None:
