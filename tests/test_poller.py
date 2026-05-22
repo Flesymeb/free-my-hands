@@ -1171,6 +1171,63 @@ def test_reusable_todo_uses_per_line_inline_conversion_output_names(tmp_path) ->
     assert conversion_by_path[converted_b]["output_override"] == "manual_hf_b"
 
 
+def test_reusable_todo_resolves_hf_checkpoint_child_but_keeps_parent_model_id(tmp_path, monkeypatch) -> None:
+    doc_markdown = """<table><tbody>
+<tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>
+<tr><td></td><td></td><td>192\\.0\\.2\\.14（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
+</tbody></table>"""
+    raw_path = "/mnt/shared-storage-user/ma4agi-gpu/team_alpha/0521-1-preview-c1"
+    resolved_path = "/mnt/gpfs/ma4agi-gpu/team_alpha/0521-1-preview-c1/checkpoint-1819"
+    fake = FakeFeishuClient(
+        [],
+        task={"guid": "task_resolve_child", "summary": "resolve child deploy"},
+        subtasks=[{"guid": "sub_1", "summary": raw_path, "description": ""}],
+        doc_markdown=doc_markdown,
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True, wake_review_auditor_on_submit=False),
+        reusable_workers=ReusableWorkersConfig(
+            enabled=True,
+            source_model_prefix="/mnt/shared-storage-user/ma4agi-gpu",
+            worker_model_prefix="/mnt/gpfs/ma4agi-gpu",
+            table_model_prefix="/mnt/gpfs/ma4agi-gpu",
+        ),
+        weight_conversion=WeightConversionConfig(
+            enabled=True,
+            source_prefixes=["/mnt/gpfs/ma4agi-gpu/team_alpha"],
+            format_detection_enabled=True,
+        ),
+    )
+    monkeypatch.setattr("fmh.poller.resolve_deployable_weight_path", lambda *args, **kwargs: resolved_path)
+    store = StateStore(config.storage.sqlite_path)
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    stats, submitted_ids, failed = worker._process_task_subtasks(  # noqa: SLF001
+        "task_resolve_child",
+        "todo:task_resolve_child",
+        chat_id="oc_1",
+    )
+
+    plan = store.list_reviews(limit=10)[0]["payload"]["plan"]
+    processed = store.get_processed_item(
+        "todo:task_resolve_child",
+        f"task_resolve_child:sub_1:{resolved_path}",
+    )
+    assert stats.submitted == 1
+    assert failed == 0
+    assert len(submitted_ids) == 1
+    assert processed is not None
+    assert plan["path"]["worker_path"] == resolved_path
+    assert plan["path"]["table_path"] == "team_alpha/0521-1-preview-c1/checkpoint-1819"
+    assert plan["path"]["model_id"] == "0521-1-preview-c1"
+    assert plan["final_table_values"]["模型id"] == "0521-1-preview-c1"
+    assert "--served-model-name 0521-1-preview-c1" in plan["vllm_command"]
+    assert f"--model {resolved_path}" in plan["vllm_command"]
+
+
 def test_reusable_todo_reserves_rows_from_other_inflight_reviews(tmp_path) -> None:
     doc_markdown = """<table><tbody>
 <tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>

@@ -8,7 +8,7 @@ import re
 import signal
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from fmh.approval import decide_review
@@ -24,7 +24,7 @@ from fmh.operator_review import (
 )
 from fmh.orchestrator import DeploymentOrchestrator
 from fmh.parser import ParseError, parse_deployment_request
-from fmh.reusable_workers import build_reusable_deployment_plan, parse_deployed_models_table
+from fmh.reusable_workers import build_plan_for_row, build_reusable_deployment_plan, parse_deployed_models_table
 from fmh.store import StateStore
 from fmh.task_status import task_status_card, task_status_with_stage
 from fmh.weight_conversion import plan_weight_conversion, resolve_deployable_weight_path
@@ -412,7 +412,7 @@ class FeishuPollingWorker:
                 detection_detail,
                 title=task_title,
                 source_ref=task_id,
-                model_id=_model_id_from_weight_path(str(entry.get("weight_path") or "")),
+                model_id=str(entry.get("model_id_override") or _model_id_from_weight_path(str(entry.get("weight_path") or ""))),
                 model=str(entry.get("weight_path") or ""),
             )
             status_message_id = str(item_state.get("source_message_id") or "")
@@ -503,7 +503,7 @@ class FeishuPollingWorker:
                 f"已提交部署请求 {result.request_id}，状态 {result.status.value}。",
                 title=task_title,
                 source_ref=task_id,
-                model_id=_model_id_from_weight_path(str(entry.get("weight_path") or "")),
+                model_id=str(entry.get("model_id_override") or _model_id_from_weight_path(str(entry.get("weight_path") or ""))),
                 model=str(entry.get("weight_path") or ""),
                 source_message_id=status_message_id,
             )
@@ -956,6 +956,12 @@ class FeishuPollingWorker:
             required_gpu_count=0,
             excluded_row_indices=reserved_row_indices,
         )
+        if entry.get("model_id_override"):
+            plan = build_plan_for_row(
+                replace(plan.path, model_id=str(entry["model_id_override"])),
+                plan.row,
+                self.config.reusable_workers,
+            )
         conversion = entry.get("weight_conversion") if isinstance(entry.get("weight_conversion"), dict) else None
         packet = make_reuse_plan_review(weight_path=entry["weight_path"], plan=plan, rows=rows, conversion=conversion)
         payload = packet.to_dict()
@@ -1373,11 +1379,13 @@ def _apply_weight_conversion_to_entry(entry: dict[str, Any], config: AppConfig) 
         config.reusable_workers,
     )
     if resolved_path:
+        original_weight_path = str(entry.get("weight_path") or "")
         entry = {
             **entry,
-            "original_weight_path": str(entry.get("weight_path") or ""),
+            "original_weight_path": original_weight_path,
             "weight_path": resolved_path,
-            "model_name": _model_id_from_weight_path(resolved_path),
+            "model_name": _model_id_from_weight_path(original_weight_path),
+            "model_id_override": _model_id_from_weight_path(original_weight_path),
             "resolved_weight_path": resolved_path,
         }
     plan = plan_weight_conversion(
