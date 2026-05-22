@@ -27,7 +27,7 @@ from fmh.parser import ParseError, parse_deployment_request
 from fmh.reusable_workers import build_reusable_deployment_plan, parse_deployed_models_table
 from fmh.store import StateStore
 from fmh.task_status import task_status_card, task_status_with_stage
-from fmh.weight_conversion import plan_weight_conversion
+from fmh.weight_conversion import plan_weight_conversion, resolve_deployable_weight_path
 
 log = logging.getLogger(__name__)
 
@@ -1367,6 +1367,19 @@ def _deployment_entries_from_task(
 
 
 def _apply_weight_conversion_to_entry(entry: dict[str, Any], config: AppConfig) -> dict[str, Any]:
+    resolved_path = resolve_deployable_weight_path(
+        str(entry.get("weight_path") or ""),
+        config.weight_conversion,
+        config.reusable_workers,
+    )
+    if resolved_path:
+        entry = {
+            **entry,
+            "original_weight_path": str(entry.get("weight_path") or ""),
+            "weight_path": resolved_path,
+            "model_name": _model_id_from_weight_path(resolved_path),
+            "resolved_weight_path": resolved_path,
+        }
     plan = plan_weight_conversion(
         str(entry.get("weight_path") or ""),
         config.weight_conversion,

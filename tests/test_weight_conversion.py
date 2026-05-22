@@ -6,7 +6,12 @@ from typing import Any
 import pytest
 
 from fmh.config import ReusableWorkersConfig, WeightConversionConfig
-from fmh.weight_conversion import detect_weight_format, plan_weight_conversion, run_weight_conversion
+from fmh.weight_conversion import (
+    detect_weight_format,
+    plan_weight_conversion,
+    resolve_deployable_weight_path,
+    run_weight_conversion,
+)
 
 
 def test_plan_weight_conversion_uses_normalized_worker_path() -> None:
@@ -120,6 +125,43 @@ def test_plan_weight_conversion_skips_unknown_format_when_detection_is_required(
 
     assert detect_weight_format(str(unknown_dir), config) == "unknown"
     assert plan_weight_conversion(str(unknown_dir), config) is None
+
+
+def test_resolve_deployable_weight_path_uses_single_hf_child(tmp_path) -> None:
+    parent = tmp_path / "run"
+    hf_child = parent / "checkpoint-1819"
+    hf_child.mkdir(parents=True)
+    (hf_child / "config.json").write_text("{}")
+    (hf_child / "model-00001-of-00001.safetensors").write_text("weights")
+    (hf_child / "iter_0001819").mkdir()
+    config = WeightConversionConfig(
+        enabled=True,
+        source_prefixes=[str(tmp_path)],
+        format_detection_enabled=True,
+        remote_format_detection=False,
+        format_detection_required=True,
+    )
+
+    assert detect_weight_format(str(parent), config) == "unknown"
+    assert resolve_deployable_weight_path(str(parent), config) == str(hf_child)
+    assert plan_weight_conversion(str(hf_child), config) is None
+
+
+def test_resolve_deployable_weight_path_ignores_ambiguous_hf_children(tmp_path) -> None:
+    parent = tmp_path / "run"
+    for name in ("checkpoint-1", "checkpoint-2"):
+        child = parent / name
+        child.mkdir(parents=True)
+        (child / "config.json").write_text("{}")
+        (child / "model-00001-of-00001.safetensors").write_text("weights")
+    config = WeightConversionConfig(
+        enabled=True,
+        source_prefixes=[str(tmp_path)],
+        format_detection_enabled=True,
+        remote_format_detection=False,
+    )
+
+    assert resolve_deployable_weight_path(str(parent), config) == ""
 
 
 def test_plan_weight_conversion_allows_manual_output_name() -> None:

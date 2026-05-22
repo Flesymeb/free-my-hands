@@ -79,6 +79,32 @@ def plan_weight_conversion(
     )
 
 
+def resolve_deployable_weight_path(
+    weight_path: str,
+    config: WeightConversionConfig,
+    reusable_config: ReusableWorkersConfig | None = None,
+) -> str:
+    if not config.enabled or not config.format_detection_enabled:
+        return ""
+    source_prefixes = [prefix.rstrip("/") for prefix in config.source_prefixes if prefix.strip()]
+    if not source_prefixes:
+        return ""
+
+    original = str(weight_path or "").strip().strip("`'\"，,")
+    if not original:
+        return ""
+    input_path = normalize_model_path(original, reusable_config).worker_path if reusable_config else original
+    if not any(input_path == prefix or input_path.startswith(prefix + "/") for prefix in source_prefixes):
+        return ""
+    if detect_weight_format(input_path, config) == "distcp":
+        return ""
+
+    resolved = _find_hf_child_path(input_path, config)
+    if resolved and resolved != input_path:
+        return resolved
+    return ""
+
+
 def detect_weight_format(path: str, config: WeightConversionConfig | None = None) -> str:
     local = _detect_local_format(path)
     if local != "missing":
@@ -86,6 +112,79 @@ def detect_weight_format(path: str, config: WeightConversionConfig | None = None
     if config and config.remote_format_detection and config.host:
         return _detect_remote_format(path, config)
     return local
+
+
+def _find_hf_child_path(path: str, config: WeightConversionConfig) -> str:
+    local = _find_local_hf_child_path(path)
+    if local:
+        return local
+    if config.remote_format_detection and config.host:
+        return _find_remote_hf_child_path(path, config)
+    return ""
+
+
+def _find_local_hf_child_path(path: str) -> str:
+    directory = Path(path)
+    if not directory.is_dir():
+        return ""
+    candidates: list[str] = []
+    for config_path in directory.glob("*/*/config.json"):
+        parent = config_path.parent
+        if _detect_local_format(str(parent)) == "hf":
+            candidates.append(str(parent))
+    for config_path in directory.glob("*/config.json"):
+        parent = config_path.parent
+        if _detect_local_format(str(parent)) == "hf":
+            candidates.append(str(parent))
+    unique = sorted(dict.fromkeys(candidates))
+    return unique[0] if len(unique) == 1 else ""
+
+
+def _find_remote_hf_child_path(path: str, config: WeightConversionConfig) -> str:
+    script = f"""set -e
+DIR={shlex.quote(path)}
+if [ ! -d "$DIR" ]; then
+  exit 0
+fi
+find_hf_dirs() {{
+  find "$DIR" -mindepth 2 -maxdepth 3 -type f -name config.json -print 2>/dev/null
+  find "$DIR" -mindepth 1 -maxdepth 2 -type f -name config.json -print 2>/dev/null
+}}
+find_hf_dirs | while IFS= read -r cfg; do
+  model_dir=$(dirname "$cfg")
+  if find "$model_dir" -maxdepth 1 -type f \\( -name '*.safetensors' -o -name 'model.safetensors.index.json' -o -name 'pytorch_model*.bin' \\) -print -quit 2>/dev/null | grep -q .; then
+    printf '%s\\n' "$model_dir"
+  fi
+done | sort -u | sed -n '1,2p'
+"""
+    result = subprocess.run(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "UpdateHostKeys=no",
+            "-o",
+            "ServerAliveInterval=60",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-CAXY",
+            config.host,
+            "bash",
+            "-s",
+        ],
+        input=script,
+        text=True,
+        capture_output=True,
+        timeout=config.detect_timeout_sec,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    candidates = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return candidates[0] if len(candidates) == 1 else ""
 
 
 def run_weight_conversion(
