@@ -77,7 +77,7 @@ max_parallel_deployments = 2
 # Matching is evaluated after source_model_prefix -> worker_model_prefix normalization.
 enabled = false
 # Roots that the bot may inspect for conversion. With format detection enabled,
-# this can be broad, because HF checkpoints are skipped automatically.
+# only DistCP-style checkpoints are converted; HF/unknown paths are deployed as-is.
 source_prefixes = ["/mnt/gpfs/team"]
 output_basename_prefix = "hf_"
 format_detection_enabled = true

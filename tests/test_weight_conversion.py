@@ -107,7 +107,7 @@ def test_plan_weight_conversion_uses_format_detection(tmp_path) -> None:
     assert plan_weight_conversion(str(hf_dir), config) is None
 
 
-def test_plan_weight_conversion_rejects_unknown_format_when_detection_is_required(tmp_path) -> None:
+def test_plan_weight_conversion_skips_unknown_format_when_detection_is_required(tmp_path) -> None:
     unknown_dir = tmp_path / "unknown_iter"
     unknown_dir.mkdir()
     config = WeightConversionConfig(
@@ -118,8 +118,8 @@ def test_plan_weight_conversion_rejects_unknown_format_when_detection_is_require
         format_detection_required=True,
     )
 
-    with pytest.raises(RuntimeError, match="unsupported or unknown weight format"):
-        plan_weight_conversion(str(unknown_dir), config)
+    assert detect_weight_format(str(unknown_dir), config) == "unknown"
+    assert plan_weight_conversion(str(unknown_dir), config) is None
 
 
 def test_plan_weight_conversion_allows_manual_output_name() -> None:

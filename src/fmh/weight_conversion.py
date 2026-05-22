@@ -61,11 +61,7 @@ def plan_weight_conversion(
     detected_format = ""
     if config.format_detection_enabled:
         detected_format = detect_weight_format(input_path, config)
-        if detected_format == "hf":
-            return None
         if detected_format != "distcp":
-            if config.format_detection_required:
-                raise RuntimeError(f"unsupported or unknown weight format for conversion: {input_path} ({detected_format})")
             return None
 
     output_path = _conversion_output_path(
