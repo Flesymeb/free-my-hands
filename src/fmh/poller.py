@@ -1589,8 +1589,7 @@ def _message_requester(item: dict[str, Any]) -> Requester:
 
 
 def _parse_short_review_decision(text: str) -> str:
-    stripped = re.sub(r"<at[^>]*>.*?</at>", "", text).strip().lower()
-    stripped = stripped.strip("。.!！ ")
+    stripped = _manual_command_text(text)
     decisions = {
         "retry": "RETRY",
         "重试": "RETRY",

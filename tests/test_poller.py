@@ -1409,7 +1409,8 @@ def test_polling_reply_retry_infers_review_from_status_card(tmp_path) -> None:
                 "parent_id": "om_status",
                 "create_time": str(now_ms),
                 "sender": {"sender_id": {"open_id": "ou_owner"}, "sender_name": "owner"},
-                "body": {"content": '{"text":"重试"}'},
+                "body": {"content": '{"text":"@_user_1 重试"}'},
+                "mentions": [{"id": "ou_bot", "id_type": "open_id", "key": "@_user_1", "name": "模型部署bot"}],
             }
         ]
     )
