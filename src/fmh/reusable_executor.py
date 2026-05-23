@@ -22,6 +22,7 @@ from fmh.weight_conversion import run_weight_conversion
 
 log = logging.getLogger(__name__)
 _DEPLOYED_DOC_WRITE_LOCK = threading.Lock()
+_WEIGHT_CONVERSION_LOCK = threading.Lock()
 
 
 class ReusableDeploymentError(RuntimeError):
@@ -170,7 +171,8 @@ class ReusableDeploymentExecutor:
         return {"worker": ip, "model_id": model_id, "endpoint": endpoint}
 
     def _run_weight_conversion(self, conversion: dict[str, Any]) -> None:
-        run_weight_conversion(conversion, self.config.weight_conversion)
+        with _WEIGHT_CONVERSION_LOCK:
+            run_weight_conversion(conversion, self.config.weight_conversion)
 
     def _mark_conversion_done(self, review_id: str, conversion: dict[str, Any]) -> None:
         review = self.store.get_review(review_id)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
 from typing import Any
 
 from fmh.config import (
@@ -567,6 +569,44 @@ def test_execute_runs_weight_conversion_before_worker_preflight(tmp_path) -> Non
         "wait",
     ]
     assert result == {"worker": "192.0.2.2", "model_id": "hf_iter_1", "endpoint": "http://192.0.2.2:8000"}
+
+
+def test_weight_conversion_runs_serially_across_parallel_deployments(tmp_path, monkeypatch) -> None:
+    active = 0
+    max_active = 0
+    calls: list[str] = []
+    guard = threading.Lock()
+
+    def fake_run_weight_conversion(conversion: dict[str, Any], _config: WeightConversionConfig) -> None:
+        nonlocal active, max_active
+        with guard:
+            active += 1
+            max_active = max(max_active, active)
+            calls.append(str(conversion["output_path"]))
+        time.sleep(0.05)
+        with guard:
+            active -= 1
+
+    monkeypatch.setattr("fmh.reusable_executor.run_weight_conversion", fake_run_weight_conversion)
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        weight_conversion=WeightConversionConfig(enabled=True),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    executor = ReusableDeploymentExecutor(config, store, FakeFeishuClient())  # type: ignore[arg-type]
+    conversions = [
+        {"output_path": "/mnt/gpfs/team/hf_iter_1"},
+        {"output_path": "/mnt/gpfs/team/hf_iter_2"},
+    ]
+
+    threads = [threading.Thread(target=executor._run_weight_conversion, args=(conversion,)) for conversion in conversions]  # noqa: SLF001
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(calls) == ["/mnt/gpfs/team/hf_iter_1", "/mnt/gpfs/team/hf_iter_2"]
+    assert max_active == 1
 
 
 def test_stop_existing_vllm_falls_back_when_tmux_interrupt_times_out(tmp_path) -> None:
