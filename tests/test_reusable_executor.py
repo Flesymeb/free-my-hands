@@ -19,6 +19,9 @@ from fmh.reusable_executor import (
     ReusableDeploymentExecutor,
     _gpu_app_pids,
     _row_can_auto_reuse,
+    _worker_reconnect_command,
+    _worker_shell_setup_command,
+    _worker_tmux_target,
     _worker_command,
 )
 from fmh.store import StateStore
@@ -487,6 +490,9 @@ def test_execute_writes_deploying_marker_before_stopping_worker(tmp_path) -> Non
         def _write_table_values(self, plan: dict[str, Any], key: str) -> None:
             order.append(f"write:{key}")
 
+        def _ensure_worker_tmux_connected(self, ip: str, session: str) -> None:
+            order.append("connect")
+
         def _stop_existing_vllm(self, ip: str, session: str, endpoint: str) -> None:
             order.append("stop")
 
@@ -509,7 +515,7 @@ def test_execute_writes_deploying_marker_before_stopping_worker(tmp_path) -> Non
         },
     )
 
-    assert order == ["preflight", "write:deploying_table_values", "stop", "send", "wait"]
+    assert order == ["preflight", "write:deploying_table_values", "connect", "stop", "connect", "send", "wait"]
     assert result == {"worker": "192.0.2.2", "model_id": "model-a", "endpoint": "http://192.0.2.2:8000"}
 
 
@@ -531,6 +537,9 @@ def test_execute_runs_weight_conversion_before_worker_preflight(tmp_path) -> Non
 
         def _write_table_values(self, plan: dict[str, Any], key: str) -> None:
             order.append(f"write:{key}")
+
+        def _ensure_worker_tmux_connected(self, ip: str, session: str) -> None:
+            order.append("connect")
 
         def _stop_existing_vllm(self, ip: str, session: str, endpoint: str) -> None:
             order.append("stop")
@@ -564,7 +573,9 @@ def test_execute_runs_weight_conversion_before_worker_preflight(tmp_path) -> Non
         "convert:/mnt/gpfs/team/hf_iter_1",
         "preflight",
         "write:deploying_table_values",
+        "connect",
         "stop",
+        "connect",
         "send",
         "wait",
     ]
@@ -731,10 +742,56 @@ def test_run_worker_falls_back_to_tmux_pane_on_worker_ssh_permission_denied(tmp_
     assert calls[1] == "pane:ssh_8_gpu_100_2:echo OK"
 
 
+def test_executor_reconnects_disconnected_worker_tmux_pane(tmp_path) -> None:
+    calls: list[str] = []
+    connected = False
+    config = AppConfig(storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")))
+    store = StateStore(config.storage.sqlite_path)
+
+    class ReconnectExecutor(ReusableDeploymentExecutor):
+        def _run_dev(self, command: str, *, timeout: int, check: bool) -> RemoteResult:
+            nonlocal connected
+            calls.append(command)
+            if "list-panes" in command:
+                return RemoteResult(command, 0, "ssh\n" if connected else "bash\n", "")
+            if "tmux send-keys" in command and "ssh -o" in command:
+                connected = True
+            return RemoteResult(command, 0, "", "")
+
+    executor = ReconnectExecutor(config, store, FakeFeishuClient())  # type: ignore[arg-type]
+
+    executor._ensure_worker_tmux_connected("198.51.100.2", "ssh_4_gpu_100_2")  # noqa: SLF001
+
+    assert any("tmux send-keys -t ssh_4_gpu_100_2:0 C-c" in call for call in calls)
+    assert any("ServerAliveInterval=60" in call and "198.51.100.2" in call for call in calls)
+    assert any("LD_LIBRARY_PATH" in call and "modeling_rope_utils.py" in call for call in calls)
+
+
 def test_worker_command_disables_update_hostkeys() -> None:
     command = _worker_command("198.51.100.2", "true")
 
     assert "-o UpdateHostKeys=no" in command
+
+
+def test_worker_tmux_target_uses_first_window_even_when_not_named_ssh() -> None:
+    assert _worker_tmux_target("ssh_4_gpu_163_102") == "ssh_4_gpu_163_102:0"
+
+
+def test_worker_reconnect_command_uses_keepalive_and_update_hostkeys() -> None:
+    command = _worker_reconnect_command("198.51.100.2")
+
+    assert "ServerAliveInterval=60" in command
+    assert "ServerAliveCountMax=3" in command
+    assert "UpdateHostKeys=no" in command
+    assert command.endswith("198.51.100.2")
+
+
+def test_worker_shell_setup_command_applies_required_worker_config() -> None:
+    command = _worker_shell_setup_command()
+
+    assert "LD_LIBRARY_PATH" in command
+    assert "/usr/local/nvidia/bin" in command
+    assert "modeling_rope_utils.py" in command
 
 
 def test_auto_reuse_allows_finished_worker_rows() -> None:

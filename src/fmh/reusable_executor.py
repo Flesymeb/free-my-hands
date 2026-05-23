@@ -163,9 +163,11 @@ class ReusableDeploymentExecutor:
             self._mark_conversion_done(review_id, conversion)
         direct_worker_available = self._preflight(ip, session, worker_path, endpoint)
         self._write_table_values(plan, "deploying_table_values")
+        self._ensure_worker_tmux_connected(ip, session)
         self._stop_existing_vllm(ip, session, endpoint)
         if direct_worker_available is False:
             self._verify_worker_path_after_stop(ip, session, worker_path)
+        self._ensure_worker_tmux_connected(ip, session)
         self._send_vllm_command(review_id, session, vllm_command)
         self._wait_until_serving(session, endpoint, model_id)
         return {"worker": ip, "model_id": model_id, "endpoint": endpoint}
@@ -173,6 +175,39 @@ class ReusableDeploymentExecutor:
     def _run_weight_conversion(self, conversion: dict[str, Any]) -> None:
         with _WEIGHT_CONVERSION_LOCK:
             run_weight_conversion(conversion, self.config.weight_conversion)
+
+    def _ensure_worker_tmux_connected(self, ip: str, session: str) -> None:
+        if self._worker_tmux_connected(session):
+            return
+        target = _worker_tmux_target(session)
+        reconnect = _worker_reconnect_command(ip)
+        setup = _worker_shell_setup_command()
+        self._run_dev(f"tmux send-keys -t {shlex.quote(target)} C-c", timeout=20, check=False)
+        self._run_dev(
+            f"tmux send-keys -t {shlex.quote(target)} {shlex.quote(reconnect)} C-m",
+            timeout=20,
+            check=True,
+        )
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            time.sleep(2)
+            if self._worker_tmux_connected(session):
+                self._run_dev(
+                    f"tmux send-keys -t {shlex.quote(target)} {shlex.quote(setup)} C-m",
+                    timeout=20,
+                    check=True,
+                )
+                return
+        pane = self._capture_pane(session)
+        raise ReusableDeploymentError(f"failed to reconnect worker ssh in tmux session {session}\n{_short(pane, 800)}")
+
+    def _worker_tmux_connected(self, session: str) -> bool:
+        result = self._run_dev(
+            f"tmux list-panes -t {shlex.quote(_worker_tmux_target(session))} -F '#{{pane_current_command}}'",
+            timeout=20,
+            check=False,
+        )
+        return result.returncode == 0 and result.stdout.strip().splitlines()[:1] == ["ssh"]
 
     def _mark_conversion_done(self, review_id: str, conversion: dict[str, Any]) -> None:
         review = self.store.get_review(review_id)
@@ -895,7 +930,32 @@ def _worker_command(ip: str, command: str) -> str:
 
 
 def _worker_tmux_target(session: str) -> str:
-    return f"{session}:ssh"
+    return f"{session}:0"
+
+
+def _worker_reconnect_command(ip: str) -> str:
+    return shlex.join(
+        [
+            "ssh",
+            "-o",
+            "ServerAliveInterval=60",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-o",
+            "UpdateHostKeys=no",
+            ip,
+        ]
+    )
+
+
+def _worker_shell_setup_command() -> str:
+    return (
+        "export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:${LD_LIBRARY_PATH:-}; "
+        "export PATH=/usr/local/nvidia/bin:${PATH:-}; "
+        "sed -i 's/ignore_keys_at_rope_validation = ignore_keys_at_rope_validation | {\"partial_rotary_factor\"}/"
+        "ignore_keys_at_rope_validation = set(ignore_keys_at_rope_validation or []) | {\"partial_rotary_factor\"}/' "
+        "/usr/local/lib/python3.12/dist-packages/transformers/modeling_rope_utils.py 2>/dev/null || true"
+    )
 
 
 def _should_fallback_worker_to_tmux(result: RemoteResult) -> bool:

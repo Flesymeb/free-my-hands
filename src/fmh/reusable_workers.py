@@ -367,7 +367,7 @@ def build_reconnect_plan(
         windows=windows or [],
         history_ssh_command=history_command,
         reconnect_command=reconnect,
-        reconnect_in_tmux_command=f"tmux send-keys -t {session}:ssh {shlex.quote(reconnect)} C-m",
+        reconnect_in_tmux_command=f"tmux send-keys -t {session}:0 {shlex.quote(reconnect)} C-m",
         keepalive_options="-o ServerAliveInterval=60 -o ServerAliveCountMax=3",
     )
 
