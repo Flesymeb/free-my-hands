@@ -14,7 +14,7 @@ from fmh.config import AppConfig
 from fmh.deployed_doc import update_deployed_models_row
 from fmh.feishu import FeishuOpenAPIClient, NullFeishuClient
 from fmh.operator_review import mention_text, review_result_card
-from fmh.reusable_workers import is_reusable_worker_state
+from fmh.reusable_workers import DeployedModelRow, is_reusable_worker_state, parse_deployed_models_table
 from fmh.store import StateStore
 from fmh.task_status import task_status_card, task_status_with_stage
 from fmh.time_utils import utc_now_iso
@@ -142,8 +142,9 @@ class ReusableDeploymentExecutor:
         return True
 
     def _execute(self, review_id: str, plan: dict[str, Any]) -> dict[str, str]:
-        row = _expect_dict(plan, "row")
         path = _expect_dict(plan, "path")
+        self._refresh_plan_row_from_doc(plan, path)
+        row = _expect_dict(plan, "row")
         ip = _expect_str(row, "ip")
         model_id = _expect_str(path, "model_id")
         worker_path = _expect_str(path, "worker_path")
@@ -505,6 +506,9 @@ class ReusableDeploymentExecutor:
 
     def _write_table_values(self, plan: dict[str, Any], key: str) -> None:
         values = plan.get(key) if isinstance(plan.get(key), dict) else {}
+        path = plan.get("path") if isinstance(plan.get("path"), dict) else {}
+        if path:
+            self._refresh_plan_row_from_doc(plan, path)
         row = plan.get("row") if isinstance(plan.get("row"), dict) else {}
         row_index = int(row.get("row_index") or 0)
         if not values or not row_index or isinstance(self.feishu, NullFeishuClient):
@@ -516,6 +520,38 @@ class ReusableDeploymentExecutor:
                 row_index=row_index,
                 values={str(k): str(v) for k, v in values.items()},
             )
+
+    def _refresh_plan_row_from_doc(self, plan: dict[str, Any], path: dict[str, Any]) -> None:
+        if isinstance(self.feishu, NullFeishuClient):
+            return
+        get_doc_markdown = getattr(self.feishu, "get_doc_markdown", None)
+        if not callable(get_doc_markdown):
+            return
+        row = plan.get("row") if isinstance(plan.get("row"), dict) else {}
+        ip = str(row.get("ip") or "").strip()
+        row_index = int(row.get("row_index") or 0)
+        if not ip:
+            return
+        markdown = str(get_doc_markdown(self.config.reusable_workers.deployed_models_doc_token) or "")
+        rows = parse_deployed_models_table(markdown)
+        current = next((candidate for candidate in rows if candidate.row_index == row_index), None)
+        if current and current.ip == ip:
+            self._set_plan_row_if_safe(plan, current, path)
+            return
+        replacement = next((candidate for candidate in rows if candidate.ip == ip), None)
+        if replacement is None:
+            raise ReusableDeploymentError(f"selected worker {ip} is no longer present in deployed-models document")
+        self._set_plan_row_if_safe(plan, replacement, path)
+
+    def _set_plan_row_if_safe(self, plan: dict[str, Any], row: DeployedModelRow, path: dict[str, Any]) -> None:
+        row_dict = row.to_dict(self.config.reusable_workers)
+        if not _current_row_safe_for_plan(row_dict, path, self.config):
+            raise ReusableDeploymentError(
+                "selected worker row changed in deployed-models document and is no longer safe to reuse: "
+                f"{row.ip} row {row.row_index}"
+            )
+        original = plan.get("row") if isinstance(plan.get("row"), dict) else {}
+        plan["row"] = {**original, **row_dict}
 
     def _mark_needs_human(self, review: dict[str, Any], decision: dict[str, Any], reason: str) -> None:
         review_id = str(review.get("review_id") or "")
@@ -1061,6 +1097,12 @@ def _row_can_auto_reuse(row: dict[str, Any], config: AppConfig) -> bool:
         str(row.get("tested_tasks") or ""),
         config.reusable_workers,
     )
+
+
+def _current_row_safe_for_plan(row: dict[str, Any], path: dict[str, Any], config: AppConfig) -> bool:
+    if _row_already_serves_model(row, path, config.reusable_workers.deploying_marker):
+        return True
+    return _row_can_auto_reuse(row, config)
 
 
 def _expect_dict(parent: dict[str, Any], key: str) -> dict[str, Any]:

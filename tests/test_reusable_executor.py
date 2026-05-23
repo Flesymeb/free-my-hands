@@ -5,6 +5,8 @@ import threading
 import time
 from typing import Any
 
+import pytest
+
 from fmh.config import (
     AppConfig,
     ApprovalConfig,
@@ -17,6 +19,7 @@ from fmh.config import (
 from fmh.reusable_executor import (
     RemoteResult,
     ReusableDeploymentExecutor,
+    ReusableDeploymentError,
     _gpu_app_pids,
     _row_can_auto_reuse,
     _worker_reconnect_command,
@@ -60,6 +63,35 @@ class FakeFeishuClient:
         if self.complete_task_error:
             raise self.complete_task_error
         self.completed_tasks.append(task_guid)
+
+
+class MarkdownFeishuClient(FakeFeishuClient):
+    def __init__(self, markdown: str) -> None:
+        super().__init__()
+        self.markdown = markdown
+
+    def get_doc_markdown(self, doc_token: str) -> str:
+        return self.markdown
+
+
+def _deployed_models_markdown(rows: list[tuple[str, str, str, str]]) -> str:
+    body = "\n".join(
+        (
+            "<tr>"
+            f"<td>{model}</td><td>{model_id}</td><td>{address}</td>"
+            "<td>qwen3_coder</td><td>qwen3</td><td></td>"
+            f"<td>{tested_tasks}</td><td></td>"
+            "</tr>"
+        )
+        for model, model_id, address, tested_tasks in rows
+    )
+    return (
+        "<table><tbody>"
+        "<tr><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td>"
+        "<td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>"
+        f"{body}"
+        "</tbody></table>"
+    )
 
 
 def test_executor_updates_existing_source_card_without_extra_success_card(tmp_path) -> None:
@@ -580,6 +612,46 @@ def test_execute_runs_weight_conversion_before_worker_preflight(tmp_path) -> Non
         "wait",
     ]
     assert result == {"worker": "192.0.2.2", "model_id": "hf_iter_1", "endpoint": "http://192.0.2.2:8000"}
+
+
+def test_refresh_plan_row_recovers_stale_row_index_by_worker_ip(tmp_path) -> None:
+    markdown = _deployed_models_markdown(
+        [
+            ("old/free", "free", "192.0.2.156（4卡）", "tau2\nvita"),
+            ("team/model-a（部署中）", "model-a（部署中）", "192.0.2.2（4卡）", ""),
+        ]
+    )
+    config = AppConfig(storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")))
+    store = StateStore(config.storage.sqlite_path)
+    executor = ReusableDeploymentExecutor(config, store, MarkdownFeishuClient(markdown))  # type: ignore[arg-type]
+    plan = {
+        "row": {"row_index": 3, "ip": "192.0.2.2"},
+        "path": {"table_path": "team/model-a", "model_id": "model-a"},
+    }
+
+    executor._refresh_plan_row_from_doc(plan, plan["path"])  # noqa: SLF001
+
+    assert plan["row"]["row_index"] == 2
+    assert plan["row"]["model_id"] == "model-a（部署中）"
+
+
+def test_refresh_plan_row_rejects_stale_worker_that_became_fresh_untested(tmp_path) -> None:
+    markdown = _deployed_models_markdown(
+        [
+            ("old/free", "free", "192.0.2.156（4卡）", "tau2\nvita"),
+            ("other/model", "other-model", "192.0.2.2（4卡）", ""),
+        ]
+    )
+    config = AppConfig(storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")))
+    store = StateStore(config.storage.sqlite_path)
+    executor = ReusableDeploymentExecutor(config, store, MarkdownFeishuClient(markdown))  # type: ignore[arg-type]
+    plan = {
+        "row": {"row_index": 3, "ip": "192.0.2.2"},
+        "path": {"table_path": "team/model-a", "model_id": "model-a"},
+    }
+
+    with pytest.raises(ReusableDeploymentError, match="no longer safe"):
+        executor._refresh_plan_row_from_doc(plan, plan["path"])  # noqa: SLF001
 
 
 def test_weight_conversion_runs_serially_across_parallel_deployments(tmp_path, monkeypatch) -> None:
