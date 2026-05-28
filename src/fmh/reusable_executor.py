@@ -147,9 +147,7 @@ class ReusableDeploymentExecutor:
         row = _expect_dict(plan, "row")
         ip = _expect_str(row, "ip")
         model_id = _expect_str(path, "model_id")
-        worker_path = _expect_str(path, "worker_path")
         session = _expect_str(plan, "tmux_session_guess")
-        vllm_command = _expect_str(plan, "vllm_command")
         port = int(self.config.reusable_workers.default_port)
         endpoint = f"http://{ip}:{port}"
 
@@ -162,12 +160,13 @@ class ReusableDeploymentExecutor:
         if conversion and conversion.get("required", True):
             self._run_weight_conversion(conversion)
             self._mark_conversion_done(review_id, conversion)
-        direct_worker_available = self._preflight(ip, session, worker_path, endpoint)
+        direct_worker_available = self._preflight(ip, session, plan, endpoint)
         self._write_table_values(plan, "deploying_table_values")
         self._ensure_worker_tmux_connected(ip, session)
         self._stop_existing_vllm(ip, session, endpoint)
         if direct_worker_available is False:
-            self._verify_worker_path_after_stop(ip, session, worker_path)
+            self._verify_worker_path_after_stop(ip, session, plan)
+        vllm_command = _expect_str(plan, "vllm_command")
         self._ensure_worker_tmux_connected(ip, session)
         self._send_vllm_command(review_id, session, vllm_command)
         self._wait_until_serving(session, endpoint, model_id)
@@ -225,7 +224,9 @@ class ReusableDeploymentExecutor:
             },
         )
 
-    def _preflight(self, ip: str, session: str, worker_path: str, endpoint: str) -> bool:
+    def _preflight(self, ip: str, session: str, plan: dict[str, Any], endpoint: str) -> bool:
+        path = _expect_dict(plan, "path")
+        worker_path = _expect_str(path, "worker_path")
         self._run_dev(f"tmux has-session -t {shlex.quote(session)}", timeout=20, check=True)
         windows = self._run_dev(
             f"tmux list-windows -t {shlex.quote(session)} -F '#{{window_index}}:#{{window_name}}:#{{pane_current_command}}'",
@@ -237,7 +238,7 @@ class ReusableDeploymentExecutor:
 
         path_check = self._run_worker(
             ip,
-            f"test -d {shlex.quote(worker_path)} && echo OK || echo MISSING",
+            _model_dir_probe_command(worker_path),
             timeout=20,
             check=False,
         )
@@ -247,21 +248,58 @@ class ReusableDeploymentExecutor:
         if path_check.returncode != 0:
             detail = "\n".join(part for part in (path_check.stdout, path_check.stderr) if part)
             raise ReusableDeploymentError(f"remote command failed ({path_check.returncode}): {_short(detail, 800)}")
-        path_check_text = path_check.stdout.strip()
-        if path_check_text != "OK":
-            raise ReusableDeploymentError(f"model path missing on worker: {worker_path}")
+        self._apply_model_dir_probe(plan, path_check.stdout)
         return True
 
-    def _verify_worker_path_after_stop(self, ip: str, session: str, worker_path: str) -> None:
+    def _verify_worker_path_after_stop(self, ip: str, session: str, plan: dict[str, Any]) -> None:
+        path = _expect_dict(plan, "path")
+        worker_path = _expect_str(path, "worker_path")
         path_check = self._run_worker(
             ip,
-            f"test -d {shlex.quote(worker_path)} && echo OK || echo MISSING",
+            _model_dir_probe_command(worker_path),
             timeout=30,
             check=True,
             tmux_session=session,
-        ).stdout.strip()
-        if path_check != "OK":
+        ).stdout
+        self._apply_model_dir_probe(plan, path_check)
+
+    def _apply_model_dir_probe(self, plan: dict[str, Any], output: str) -> None:
+        path = _expect_dict(plan, "path")
+        worker_path = _expect_str(path, "worker_path")
+        status, resolved_path, detail = _parse_model_dir_probe(output)
+        if status == "OK":
+            return
+        if status == "RESOLVED" and resolved_path:
+            self._replace_plan_worker_path(plan, resolved_path)
+            return
+        if status == "MISSING":
             raise ReusableDeploymentError(f"model path missing on worker: {worker_path}")
+        if status == "AMBIGUOUS":
+            raise ReusableDeploymentError(
+                "model path is not a loadable HF directory and has multiple candidate child model dirs: "
+                f"{detail}"
+            )
+        raise ReusableDeploymentError(
+            "model path is not a loadable HF directory: "
+            f"{worker_path}. Expected config.json/params.json in that directory, or exactly one child model directory."
+        )
+
+    def _replace_plan_worker_path(self, plan: dict[str, Any], resolved_path: str) -> None:
+        path = _expect_dict(plan, "path")
+        old_worker_path = _expect_str(path, "worker_path")
+        table_path = _table_path_for_worker_path(resolved_path, self.config)
+        model_id = _expect_str(path, "model_id")
+        path["worker_path"] = resolved_path
+        path["table_path"] = table_path
+        plan["vllm_command"] = _replace_vllm_model_arg(_expect_str(plan, "vllm_command"), old_worker_path, resolved_path)
+        final_values = plan.get("final_table_values") if isinstance(plan.get("final_table_values"), dict) else {}
+        deploying_values = plan.get("deploying_table_values") if isinstance(plan.get("deploying_table_values"), dict) else {}
+        final_values["模型"] = table_path
+        final_values["模型id"] = model_id
+        deploying_values["模型"] = f"{table_path}{self.config.reusable_workers.deploying_marker}"
+        deploying_values["模型id"] = f"{model_id}{self.config.reusable_workers.deploying_marker}"
+        plan["final_table_values"] = final_values
+        plan["deploying_table_values"] = deploying_values
 
     def _stop_existing_vllm(self, ip: str, session: str, endpoint: str) -> None:
         target = _worker_tmux_target(session)
@@ -992,6 +1030,67 @@ def _worker_shell_setup_command() -> str:
         "ignore_keys_at_rope_validation = set(ignore_keys_at_rope_validation or []) | {\"partial_rotary_factor\"}/' "
         "/usr/local/lib/python3.12/dist-packages/transformers/modeling_rope_utils.py 2>/dev/null || true"
     )
+
+
+def _model_dir_probe_command(worker_path: str) -> str:
+    return f"""DIR={shlex.quote(worker_path)}
+if [ ! -d "$DIR" ]; then
+  printf 'MISSING\\n'
+  exit 0
+fi
+if [ -f "$DIR/config.json" ] || [ -f "$DIR/params.json" ]; then
+  printf 'OK\\t%s\\n' "$DIR"
+  exit 0
+fi
+candidates=$(
+  find "$DIR" -mindepth 1 -maxdepth 2 -type f \\( -name config.json -o -name params.json \\) -print 2>/dev/null |
+  while IFS= read -r cfg; do
+    model_dir=$(dirname "$cfg")
+    if find "$model_dir" -maxdepth 1 -type f \\( -name '*.safetensors' -o -name 'model.safetensors.index.json' -o -name 'pytorch_model*.bin' \\) -print -quit 2>/dev/null | grep -q .; then
+      printf '%s\\n' "$model_dir"
+    fi
+  done | sort -u | sed -n '1,2p'
+)
+count=$(printf '%s\\n' "$candidates" | sed '/^$/d' | wc -l | tr -d ' ')
+if [ "$count" = "1" ]; then
+  printf 'RESOLVED\\t%s\\n' "$candidates"
+elif [ "$count" = "0" ]; then
+  printf 'INVALID\\n'
+else
+  printf 'AMBIGUOUS\\t%s\\n' "$(printf '%s' "$candidates" | paste -sd ',' -)"
+fi"""
+
+
+def _parse_model_dir_probe(output: str) -> tuple[str, str, str]:
+    line = next((raw.strip() for raw in output.splitlines() if raw.strip()), "")
+    if not line:
+        return "INVALID", "", ""
+    parts = line.split("\t", 2)
+    status = parts[0].strip().upper()
+    resolved = parts[1].strip() if len(parts) > 1 else ""
+    detail = parts[2].strip() if len(parts) > 2 else resolved
+    if status == "AMBIGUOUS" and len(parts) > 1:
+        detail = parts[1].strip()
+    return status, resolved, detail
+
+
+def _table_path_for_worker_path(worker_path: str, config: AppConfig) -> str:
+    table_prefix = config.reusable_workers.table_model_prefix.rstrip("/")
+    if worker_path.startswith(table_prefix + "/"):
+        return worker_path[len(table_prefix) + 1 :]
+    return worker_path.lstrip("/")
+
+
+def _replace_vllm_model_arg(command: str, old_path: str, new_path: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return command.replace(old_path, new_path)
+    for index, part in enumerate(parts[:-1]):
+        if part == "--model":
+            parts[index + 1] = new_path
+            return shlex.join(parts)
+    return command.replace(old_path, new_path)
 
 
 def _should_fallback_worker_to_tmux(result: RemoteResult) -> bool:

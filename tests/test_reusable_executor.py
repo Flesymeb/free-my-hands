@@ -516,7 +516,7 @@ def test_execute_writes_deploying_marker_before_stopping_worker(tmp_path) -> Non
     store = StateStore(config.storage.sqlite_path)
 
     class RecordingExecutor(ReusableDeploymentExecutor):
-        def _preflight(self, ip: str, session: str, worker_path: str, endpoint: str) -> None:
+        def _preflight(self, ip: str, session: str, plan: dict[str, Any], endpoint: str) -> None:
             order.append("preflight")
 
         def _write_table_values(self, plan: dict[str, Any], key: str) -> None:
@@ -563,7 +563,7 @@ def test_execute_runs_weight_conversion_before_worker_preflight(tmp_path) -> Non
         def _run_weight_conversion(self, conversion: dict[str, Any]) -> None:
             order.append(f"convert:{conversion['output_path']}")
 
-        def _preflight(self, ip: str, session: str, worker_path: str, endpoint: str) -> bool:
+        def _preflight(self, ip: str, session: str, plan: dict[str, Any], endpoint: str) -> bool:
             order.append("preflight")
             return True
 
@@ -652,6 +652,95 @@ def test_refresh_plan_row_rejects_stale_worker_that_became_fresh_untested(tmp_pa
 
     with pytest.raises(ReusableDeploymentError, match="no longer safe"):
         executor._refresh_plan_row_from_doc(plan, plan["path"])  # noqa: SLF001
+
+
+def test_preflight_resolves_single_child_hf_model_dir(tmp_path) -> None:
+    parent_path = "/mnt/gpfs/ma4agi-gpu/zhangbo/0521-1-preview-c1"
+    child_path = f"{parent_path}/checkpoint-1819"
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        reusable_workers=ReusableWorkersConfig(
+            table_model_prefix="/mnt/gpfs/ma4agi-gpu",
+            deploying_marker="（部署中）",
+        ),
+    )
+    store = StateStore(config.storage.sqlite_path)
+
+    class ResolvingExecutor(ReusableDeploymentExecutor):
+        def _run_dev(self, command: str, *, timeout: int, check: bool) -> RemoteResult:
+            if "list-windows" in command:
+                return RemoteResult(command, 0, "0:ssh:ssh\n1:test-model:bash\n", "")
+            return RemoteResult(command, 0, "", "")
+
+        def _run_worker(
+            self,
+            ip: str,
+            command: str,
+            *,
+            timeout: int,
+            check: bool,
+            tmux_session: str | None = None,
+        ) -> RemoteResult:
+            assert parent_path in command
+            return RemoteResult(command, 0, f"RESOLVED\t{child_path}\n", "")
+
+    executor = ResolvingExecutor(config, store, FakeFeishuClient())  # type: ignore[arg-type]
+    plan = {
+        "path": {
+            "model_id": "0521-1-preview-c1",
+            "worker_path": parent_path,
+            "table_path": "zhangbo/0521-1-preview-c1",
+        },
+        "vllm_command": (
+            "python3 -m vllm.entrypoints.openai.api_server "
+            "--served-model-name 0521-1-preview-c1 "
+            f"--model {parent_path} --data-parallel-size 4"
+        ),
+        "final_table_values": {"模型": "zhangbo/0521-1-preview-c1", "模型id": "0521-1-preview-c1"},
+        "deploying_table_values": {"模型": "zhangbo/0521-1-preview-c1（部署中）", "模型id": "0521-1-preview-c1（部署中）"},
+    }
+
+    assert executor._preflight("192.0.2.2", "ssh_4_gpu_2_2", plan, "http://192.0.2.2:8000") is True  # noqa: SLF001
+
+    assert plan["path"]["worker_path"] == child_path
+    assert plan["path"]["table_path"] == "zhangbo/0521-1-preview-c1/checkpoint-1819"
+    assert plan["path"]["model_id"] == "0521-1-preview-c1"
+    assert f"--model {child_path}" in plan["vllm_command"]
+    assert "--served-model-name 0521-1-preview-c1" in plan["vllm_command"]
+    assert plan["final_table_values"]["模型"] == "zhangbo/0521-1-preview-c1/checkpoint-1819"
+    assert plan["deploying_table_values"]["模型"] == "zhangbo/0521-1-preview-c1/checkpoint-1819（部署中）"
+
+
+def test_preflight_rejects_non_hf_parent_without_unique_child(tmp_path) -> None:
+    parent_path = "/mnt/gpfs/ma4agi-gpu/zhangbo/0521-1-preview-c1"
+    config = AppConfig(storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")))
+    store = StateStore(config.storage.sqlite_path)
+
+    class InvalidExecutor(ReusableDeploymentExecutor):
+        def _run_dev(self, command: str, *, timeout: int, check: bool) -> RemoteResult:
+            if "list-windows" in command:
+                return RemoteResult(command, 0, "0:ssh:ssh\n", "")
+            return RemoteResult(command, 0, "", "")
+
+        def _run_worker(
+            self,
+            ip: str,
+            command: str,
+            *,
+            timeout: int,
+            check: bool,
+            tmux_session: str | None = None,
+        ) -> RemoteResult:
+            return RemoteResult(command, 0, "INVALID\n", "")
+
+    executor = InvalidExecutor(config, store, FakeFeishuClient())  # type: ignore[arg-type]
+    plan = {
+        "path": {"model_id": "0521-1-preview-c1", "worker_path": parent_path},
+        "vllm_command": f"python3 -m vllm.entrypoints.openai.api_server --model {parent_path}",
+    }
+
+    with pytest.raises(ReusableDeploymentError, match="not a loadable HF directory"):
+        executor._preflight("192.0.2.2", "ssh_4_gpu_2_2", plan, "http://192.0.2.2:8000")  # noqa: SLF001
 
 
 def test_weight_conversion_runs_serially_across_parallel_deployments(tmp_path, monkeypatch) -> None:
@@ -762,7 +851,7 @@ def test_execute_skips_restart_when_target_model_is_already_serving(tmp_path) ->
             order.append(f"endpoint:{endpoint}")
             return ["model-a"]
 
-        def _preflight(self, ip: str, session: str, worker_path: str, endpoint: str) -> bool:
+        def _preflight(self, ip: str, session: str, plan: dict[str, Any], endpoint: str) -> bool:
             raise AssertionError("already-serving deployments should not preflight or restart")
 
     executor = RecordingExecutor(config, store, FakeFeishuClient())  # type: ignore[arg-type]
