@@ -31,3 +31,6 @@ temp/
 *.local.toml
 config.toml
 config.local.toml
+
+
+.codegraph
