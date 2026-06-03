@@ -1486,19 +1486,26 @@ def _candidate_lines(text: str) -> list[str]:
 def _extract_weight_path_from_line(line: str, relative_prefix: str) -> str:
     explicit = _deployment_path_key_match(line)
     if explicit:
-        return explicit.group("path").strip("`'\"，,")
+        return _normalize_extracted_weight_path(explicit.group("path"))
     inline_named = _inline_conversion_output_match(line)
     if inline_named:
-        return inline_named.group("path").strip("`'\"，,")
+        return _normalize_extracted_weight_path(inline_named.group("path"))
     storage = re.search(
-        r"(?:^|\s)(?P<path>(?:/|s3://|oss://|hdfs://|hf://|gs://)[^\s`'\"，,]+)",
+        r"(?:^|\s)(?P<path>(?:/|mnt/|s3://|oss://|hdfs://|hf://|gs://)[^\s`'\"，,]+)",
         line,
     )
     if storage:
-        return storage.group("path").strip("`'\"，,")
+        return _normalize_extracted_weight_path(storage.group("path"))
     if relative_prefix and _looks_like_relative_model_path(line):
         return relative_prefix.rstrip("/") + "/" + line.strip("`'\"，,").lstrip("/")
     return ""
+
+
+def _normalize_extracted_weight_path(value: str) -> str:
+    path = value.strip("`'\"，,")
+    if path.startswith("mnt/"):
+        return "/" + path
+    return path
 
 
 def _has_deployment_path_key(line: str) -> bool:

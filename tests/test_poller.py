@@ -18,7 +18,7 @@ from fmh.config import (
 )
 from fmh.models import RequestStatus
 from fmh.orchestrator import DeploymentOrchestrator
-from fmh.poller import FeishuPollingWorker, _task_item_status_key
+from fmh.poller import FeishuPollingWorker, _extract_weight_path_from_line, _task_item_status_key
 from fmh.runner import make_runner
 from fmh.store import StateStore
 
@@ -134,6 +134,23 @@ class FakeFeishuClient:
     def _next_message_id(self) -> str:
         self._message_counter += 1
         return f"om_fake_{self._message_counter}"
+
+
+def test_extract_weight_path_restores_missing_mnt_slash() -> None:
+    assert (
+        _extract_weight_path_from_line(
+            "mnt/shared-storage-user/ma4agi-gpu/zhangbo/opd-0528-1-preview-c2",
+            "",
+        )
+        == "/mnt/shared-storage-user/ma4agi-gpu/zhangbo/opd-0528-1-preview-c2"
+    )
+    assert (
+        _extract_weight_path_from_line(
+            "weight_path: mnt/gpfs/ma4agi-gpu/zhangbo/opd-0528-1-preview-c2",
+            "",
+        )
+        == "/mnt/gpfs/ma4agi-gpu/zhangbo/opd-0528-1-preview-c2"
+    )
 
 
 def test_polling_submits_chat_deployment_once(tmp_path) -> None:
