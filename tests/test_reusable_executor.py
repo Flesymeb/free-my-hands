@@ -961,12 +961,52 @@ def test_auto_reuse_allows_finished_worker_rows() -> None:
     cases = [
         ({"model": "", "model_id": "", "tested_tasks": ""}, True),
         ({"model": "old/model", "model_id": "old-model", "tested_tasks": "tau2, vita"}, True),
+        (
+            {
+                "model": "old/model",
+                "model_id": "old-model",
+                "tested_tasks": "tau2, vita",
+                "reuse": "",
+                "reuse_column_present": False,
+            },
+            True,
+        ),
         ({"model": "old/model", "model_id": "old-model", "tested_tasks": "TAU2\nVITA"}, True),
         ({"model": "old/model", "model_id": "old-model", "tested_tasks": "tau2, vita(running)"}, False),
         ({"model": "old/model", "model_id": "old-model", "tested_tasks": "tau2, vita（running）"}, False),
         ({"model": "old/model", "model_id": "old-model", "tested_tasks": "tau2, vita ( running )"}, False),
         ({"model": "old/model", "model_id": "old-model", "tested_tasks": "tau20, vitamin"}, False),
         ({"model": "fresh/model", "model_id": "fresh-model", "tested_tasks": ""}, False),
+        (
+            {
+                "model": "old/model",
+                "model_id": "old-model",
+                "tested_tasks": "tau2, vita",
+                "reuse": "yes",
+                "reuse_column_present": True,
+            },
+            True,
+        ),
+        (
+            {
+                "model": "old/model",
+                "model_id": "old-model",
+                "tested_tasks": "tau2, vita",
+                "reuse": "no",
+                "reuse_column_present": True,
+            },
+            False,
+        ),
+        (
+            {
+                "model": "",
+                "model_id": "",
+                "tested_tasks": "",
+                "reuse": "",
+                "reuse_column_present": True,
+            },
+            False,
+        ),
     ]
 
     for row, expected in cases:

@@ -65,6 +65,25 @@ def test_reusable_worker_selection_covers_idle_finished_running_and_fresh_rows()
     assert choose_reusable_row(rows, config) == rows[0]
 
 
+def test_reuse_column_filters_rows_before_reusable_state() -> None:
+    markdown = """<table><tbody>
+<tr><td>复用</td><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>
+<tr><td>no</td><td>old/finished-no</td><td>finished-no</td><td>192\\.0\\.2\\.10（4卡）</td><td></td><td></td><td></td><td>tau2\nvita</td><td></td></tr>
+<tr><td></td><td></td><td></td><td>192\\.0\\.2\\.11（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>yes</td><td>fresh/model</td><td>fresh</td><td>192\\.0\\.2\\.12（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>yes</td><td>old/finished-yes</td><td>finished-yes</td><td>192\\.0\\.2\\.13（4卡）</td><td></td><td></td><td></td><td>tau2\nvita</td><td></td></tr>
+</tbody></table>"""
+    config = ReusableWorkersConfig()
+    rows = parse_deployed_models_table(markdown)
+
+    assert [row.reuse for row in rows] == ["no", "", "yes", "yes"]
+    assert [row.reuse_column_present for row in rows] == [True, True, True, True]
+    assert [row.reuse_allows_scan() for row in rows] == [False, False, True, True]
+    assert [row.is_reusable(config) for row in rows] == [False, False, False, True]
+    assert rows[0].to_dict(config)["reusable"] is False
+    assert choose_reusable_row(rows, config) == rows[3]
+
+
 @pytest.mark.parametrize(
     ("tested_tasks", "expected"),
     [
@@ -246,6 +265,8 @@ def test_build_reuse_plan() -> None:
     assert plan.final_table_values["模型id"] == "bar"
     assert plan.deploying_table_values["已经测试完的任务"] == ""
     assert plan.final_table_values["已经测试完的任务"] == ""
+    assert plan.deploying_table_values["复用"] == "yes"
+    assert plan.final_table_values["复用"] == "yes"
 
 
 def test_build_reconnect_plan_adds_keepalive() -> None:
@@ -278,4 +299,5 @@ def test_build_new_worker_row_plan() -> None:
     assert plan.row_values["模型"] == "new/model"
     assert plan.row_values["模型id"] == "model"
     assert "198.51.100.2" in plan.row_values["SSH转发命令"]
+    assert plan.row_values["复用"] == "yes"
     assert "UpdateHostKeys=no" in plan.row_values["SSH转发命令"]

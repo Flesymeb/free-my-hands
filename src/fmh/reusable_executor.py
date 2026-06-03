@@ -14,7 +14,12 @@ from fmh.config import AppConfig
 from fmh.deployed_doc import update_deployed_models_row
 from fmh.feishu import FeishuOpenAPIClient, NullFeishuClient
 from fmh.operator_review import mention_text, review_result_card
-from fmh.reusable_workers import DeployedModelRow, is_reusable_worker_state, parse_deployed_models_table
+from fmh.reusable_workers import (
+    DeployedModelRow,
+    is_reusable_worker_state,
+    parse_deployed_models_table,
+    reuse_flag_allows_scan,
+)
 from fmh.store import StateStore
 from fmh.task_status import task_status_card, task_status_with_stage
 from fmh.time_utils import utc_now_iso
@@ -1190,12 +1195,23 @@ def _gpu_app_pids(output: str) -> list[str]:
 
 
 def _row_can_auto_reuse(row: dict[str, Any], config: AppConfig) -> bool:
+    if not reuse_flag_allows_scan(
+        str(row.get("reuse") or row.get("复用") or ""),
+        column_present=_reuse_column_present(row),
+    ):
+        return False
     return is_reusable_worker_state(
         str(row.get("model") or ""),
         str(row.get("model_id") or ""),
         str(row.get("tested_tasks") or ""),
         config.reusable_workers,
     )
+
+
+def _reuse_column_present(row: dict[str, Any]) -> bool:
+    if "reuse_column_present" in row:
+        return bool(row.get("reuse_column_present"))
+    return "reuse" in row or "复用" in row
 
 
 def _current_row_safe_for_plan(row: dict[str, Any], path: dict[str, Any], config: AppConfig) -> bool:

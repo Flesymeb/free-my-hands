@@ -32,6 +32,8 @@ class DeployedModelRow:
     ssh_forward_command: str
     tested_tasks: str
     no_proxy_command: str
+    reuse: str = ""
+    reuse_column_present: bool = False
 
     @property
     def ip(self) -> str:
@@ -59,12 +61,16 @@ class DeployedModelRow:
         return bool(self.model.strip() or self.model_id.strip()) and not self.tested_tasks.strip()
 
     def is_reusable(self, config: ReusableWorkersConfig) -> bool:
-        return is_reusable_worker_state(self.model, self.model_id, self.tested_tasks, config)
+        return self.reuse_allows_scan() and is_reusable_worker_state(self.model, self.model_id, self.tested_tasks, config)
+
+    def reuse_allows_scan(self) -> bool:
+        return reuse_flag_allows_scan(self.reuse, column_present=self.reuse_column_present)
 
     def to_dict(self, config: ReusableWorkersConfig | None = None) -> dict[str, Any]:
         data = asdict(self)
         data["ip"] = self.ip
         data["gpu_count"] = self.gpu_count
+        data["reuse_allowed"] = self.reuse_allows_scan()
         if config is not None:
             data["reusable"] = self.is_reusable(config)
         return data
@@ -154,6 +160,7 @@ def parse_deployed_models_table(markdown: str) -> list[DeployedModelRow]:
     if not rows:
         return []
     header = [_clean_cell(cell) for cell in rows[0]]
+    reuse_column_present = any(name in header for name in ("复用", "是否复用", "可复用"))
     out: list[DeployedModelRow] = []
     for index, cells in enumerate(rows[1:], start=1):
         row = _row_dict(header, cells)
@@ -170,6 +177,8 @@ def parse_deployed_models_table(markdown: str) -> list[DeployedModelRow]:
                 ssh_forward_command=row.get("SSH转发命令", ""),
                 tested_tasks=row.get("已经测试完的任务", ""),
                 no_proxy_command=row.get("vpn排除命令", ""),
+                reuse=_row_value(row, "复用", "是否复用", "可复用"),
+                reuse_column_present=reuse_column_present,
             )
         )
     return out
@@ -247,6 +256,17 @@ def is_reusable_worker_state(
     return tested_tasks_has_finished_tasks(tested_text, config.required_finished_tasks)
 
 
+def reuse_flag_allows_scan(value: str, *, column_present: bool = True) -> bool:
+    if not column_present:
+        return True
+    text = normalize_tested_tasks(value).lower()
+    if text in {"yes", "y", "true", "1", "是", "可", "可以", "复用"}:
+        return True
+    if text in {"no", "n", "false", "0", "否", "不可", "不用", "占用", "使用中"}:
+        return False
+    return False
+
+
 def normalize_model_path(raw_path: str, config: ReusableWorkersConfig) -> ModelPathInfo:
     original = raw_path.strip().strip("`'\"，,")
     worker_path = original
@@ -311,6 +331,7 @@ def build_plan_for_row(
     no_proxy = _no_proxy_command(row.ip)
     vllm = _vllm_command(path, gpu_count, tool_parser, reasoning_parser, config)
     tmux_session = _tmux_session_guess(row.ip, gpu_count)
+    reuse_flag = row.reuse.strip() or "yes"
     return ReusableDeploymentPlan(
         path=path,
         row=row,
@@ -336,6 +357,7 @@ def build_plan_for_row(
             "模型": f"{path.table_path}{config.deploying_marker}",
             "模型id": f"{path.model_id}{config.deploying_marker}",
             "已经测试完的任务": "",
+            "复用": reuse_flag,
         },
         final_table_values={
             "模型": path.table_path,
@@ -346,6 +368,7 @@ def build_plan_for_row(
             "SSH转发命令": ssh_forward,
             "已经测试完的任务": "",
             "vpn排除命令": no_proxy,
+            "复用": reuse_flag,
         },
     )
 
@@ -424,6 +447,13 @@ def _row_dict(header: list[str], cells: list[str]) -> dict[str, str]:
     for index, name in enumerate(header):
         out[name] = _clean_cell(cells[index]) if index < len(cells) else ""
     return out
+
+
+def _row_value(row: dict[str, str], *names: str) -> str:
+    for name in names:
+        if name in row:
+            return row.get(name, "")
+    return ""
 
 
 def _clean_cell(value: str) -> str:

@@ -75,6 +75,53 @@ def test_deterministic_review_approves_idle_empty_row() -> None:
     assert decision["decision"] == "APPROVE"
 
 
+def test_deterministic_review_keeps_old_tables_compatible() -> None:
+    payload = {
+        "stage": "reuse_row_selected",
+        "plan": {
+            "row": {
+                "reuse": "",
+                "reuse_column_present": False,
+                "model": "team/model",
+                "model_id": "model",
+                "tested_tasks": "tau2\nvita",
+                "ip": "192.0.2.156",
+                "gpu_count": 4,
+            },
+            "path": {"worker_path": "/mnt/worker-models/team/next"},
+            "tmux_session_guess": "ssh_4_gpu_2_156",
+            "vllm_command": "python3 -m vllm.entrypoints.openai.api_server --data-parallel-size 4",
+        },
+    }
+
+    decision = deterministic_review_decision(AppConfig(reusable_workers=ReusableWorkersConfig()), payload)
+
+    assert decision is not None
+    assert decision["decision"] == "APPROVE"
+
+
+def test_deterministic_review_does_not_approve_reuse_no_row() -> None:
+    payload = {
+        "stage": "reuse_row_selected",
+        "plan": {
+            "row": {
+                "reuse": "no",
+                "reuse_column_present": True,
+                "model": "team/model",
+                "model_id": "model",
+                "tested_tasks": "tau2\nvita",
+                "ip": "192.0.2.156",
+                "gpu_count": 4,
+            },
+            "path": {"worker_path": "/mnt/worker-models/team/next"},
+            "tmux_session_guess": "ssh_4_gpu_2_156",
+            "vllm_command": "python3 -m vllm.entrypoints.openai.api_server --data-parallel-size 4",
+        },
+    }
+
+    assert deterministic_review_decision(AppConfig(reusable_workers=ReusableWorkersConfig()), payload) is None
+
+
 def test_deterministic_review_does_not_approve_fresh_untested_row() -> None:
     payload = {
         "stage": "reuse_row_selected",

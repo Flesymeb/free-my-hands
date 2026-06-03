@@ -23,7 +23,7 @@ from fmh.operator_review import (
     review_result_card,
     review_status_for_decision,
 )
-from fmh.reusable_workers import is_reusable_worker_state
+from fmh.reusable_workers import is_reusable_worker_state, reuse_flag_allows_scan
 from fmh.reusable_executor import ReusableDeploymentExecutor
 from fmh.store import StateStore
 from fmh.task_status import task_status_card, task_status_with_stage
@@ -394,6 +394,12 @@ def deterministic_review_decision(config: AppConfig, payload: dict[str, Any]) ->
     if not isinstance(row, dict) or not isinstance(path, dict):
         return None
 
+    if not reuse_flag_allows_scan(
+        str(row.get("reuse") or row.get("复用") or ""),
+        column_present=_reuse_column_present(row),
+    ):
+        return None
+
     if not is_reusable_worker_state(
         str(row.get("model") or ""),
         str(row.get("model_id") or ""),
@@ -420,7 +426,7 @@ def deterministic_review_decision(config: AppConfig, payload: dict[str, Any]) ->
     return {
         "decision": "APPROVE",
         "summary": (
-            "已部署模型文档满足复用条件：空闲行或 required tasks 已完成且无 running 标记，"
+            "已部署模型文档满足复用条件：复用列允许扫描，空闲行或 required tasks 已完成且无 running 标记，"
             "路径、tmux session 和卡数检查通过。"
         ),
         "risks": [
@@ -433,6 +439,12 @@ def deterministic_review_decision(config: AppConfig, payload: dict[str, Any]) ->
             "启动后检查 /v1/models，并在通过后写回文档。",
         ],
     }
+
+
+def _reuse_column_present(row: dict[str, Any]) -> bool:
+    if "reuse_column_present" in row:
+        return bool(row.get("reuse_column_present"))
+    return "reuse" in row or "复用" in row
 
 
 def parse_codex_decision(output: str) -> dict[str, Any] | None:

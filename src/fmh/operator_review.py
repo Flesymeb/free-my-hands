@@ -77,7 +77,8 @@ def make_reuse_plan_review(
     if conversion:
         context["weight_conversion"] = conversion
     checks = [
-        "本阶段以已部署模型文档为准入依据：空闲行，或 required_finished_tasks 均已完成且没有 running 标记，即可批准复用计划。",
+        "本阶段以已部署模型文档为准入依据：如果存在复用列，仅复用=yes 的行可进入候选；复用=no 或空白的行不可动。",
+        "候选行还必须是空闲行，或 required_finished_tasks 均已完成且没有 running 标记，才可批准复用计划。",
         "确认 selected_row 的已经测试完的任务包含 tau2 和 vita，且没有 running 标记。",
         "如果已经测试完的任务为空且模型/模型id也为空，这是空闲 worker；如果已经测试完的任务为空但模型/模型id不为空，这是刚部署未测试，不可停。",
         "确认待部署模型路径已从 /mnt/shared-models 转为 /mnt/worker-models。",
@@ -87,6 +88,7 @@ def make_reuse_plan_review(
     ]
     risks = [
         "停错 tmux session 会影响其他正在服务的模型。",
+        "如果复用列被误标 yes，可能复用仍在使用的节点。",
         "如果 tau2/vita 状态过期，可能复用仍在使用的节点。",
         "如果模型路径未转换正确，vLLM 会启动失败。",
     ]
@@ -427,7 +429,9 @@ def _codex_prompt(packet: ReviewPacket) -> str:
     return (
         "你是 free-my-hands 部署流程的审核调控 Codex。请审查下面的阶段审核包。\n"
         "审批边界：reuse_row_selected 阶段只审核“是否可以选这个常驻 worker 进入下一步”。"
-        "已部署模型文档是本阶段的准入依据：如果 selected_row 是空闲行（模型、模型id、已经测试完的任务均为空），"
+        "已部署模型文档是本阶段的准入依据：如果表格存在复用列，selected_row.reuse 必须为 yes/是/true/1；"
+        "复用为 no/否/false/0 或空白时不可批准。"
+        "通过复用列后，如果 selected_row 是空闲行（模型、模型id、已经测试完的任务均为空），"
         "或者 selected_row.tested_tasks 同时精确列出 tau2 和 vita 且没有 (running) 标记；"
         "模型路径已正确从 shared-storage 前缀转换到 worker 前缀；"
         "tmux_session_guess 与 worker IP 后两段一致；vLLM 命令卡数与 row.gpu_count 一致，"
