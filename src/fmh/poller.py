@@ -146,6 +146,9 @@ class FeishuPollingWorker:
         removed = self.store.delete_legacy_aggregate_task_statuses()
         if removed:
             log.info("removed %s legacy aggregate task status record(s)", removed)
+        reconciled = self.store.reconcile_processed_items_from_reviews()
+        if reconciled:
+            log.info("reconciled %s processed item review status record(s)", reconciled)
         log.info("polling started: interval=%ss", self.config.polling.interval_sec)
         while True:
             try:

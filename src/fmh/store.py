@@ -273,6 +273,49 @@ class StateStore:
             )
         return int(cursor.rowcount or 0)
 
+    def reconcile_processed_items_from_reviews(self) -> int:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    p.source_key,
+                    p.item_id,
+                    p.request_id,
+                    r.status AS review_status,
+                    r.decision_json
+                FROM processed_items AS p
+                JOIN operator_reviews AS r ON r.review_id = p.request_id
+                WHERE p.request_id != ''
+                  AND p.status IN ('review_pending', 'codex_reviewing', 'approved', 'deploying', 'submitted')
+                  AND r.status IN ('deployed', 'deploy_failed', 'needs_human')
+                """
+            ).fetchall()
+            updated = 0
+            for row in rows:
+                decision = _json_dict(str(row["decision_json"] or "{}"))
+                summary = str(
+                    decision.get("summary")
+                    or decision.get("execution_summary")
+                    or decision.get("error")
+                    or row["review_status"]
+                )
+                conn.execute(
+                    """
+                    UPDATE processed_items
+                    SET status = ?, summary = ?, processed_at = ?
+                    WHERE source_key = ? AND item_id = ?
+                    """,
+                    (
+                        row["review_status"],
+                        summary,
+                        utc_now_iso(),
+                        row["source_key"],
+                        row["item_id"],
+                    ),
+                )
+                updated += 1
+        return updated
+
     def create_review(
         self,
         review_id: str,
@@ -590,8 +633,16 @@ def _review_row_to_dict(row: sqlite3.Row) -> dict[str, object]:
         "stage": row["stage"],
         "subject_id": row["subject_id"],
         "status": row["status"],
-        "payload": json.loads(row["payload_json"]),
-        "decision": json.loads(row["decision_json"] or "{}"),
+        "payload": _json_dict(row["payload_json"]),
+        "decision": _json_dict(row["decision_json"] or "{}"),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def _json_dict(value: str) -> dict[str, object]:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}

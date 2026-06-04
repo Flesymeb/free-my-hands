@@ -81,3 +81,26 @@ def test_delete_legacy_aggregate_task_statuses_keeps_item_statuses(tmp_path) -> 
     assert store.get_task_status("todo:task_1") == {}
     assert store.get_task_status("todo:task_1:item:abc")["source_message_id"] == "om_item"
     assert store.get_setting("task_status:chat:oc_1") == "{}"
+
+
+def test_reconcile_processed_items_from_terminal_reviews(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.create_review("rvw-deployed", "reuse_row_selected", "subject", {})
+    store.create_review("rvw-human", "reuse_row_selected", "subject", {})
+    store.decide_review("rvw-deployed", "deployed", {"summary": "done"})
+    store.decide_review("rvw-human", "needs_human", {"error": "manual"})
+    store.mark_processed_item("todo:task_1", "task_1:sub_1:/mnt/a", "review_pending", request_id="rvw-deployed")
+    store.mark_processed_item("todo:task_2", "task_2:sub_1:/mnt/b", "deploying", request_id="rvw-human")
+    store.mark_processed_item("todo:task_3", "task_3:sub_1:/mnt/c", "review_pending", request_id="missing")
+
+    updated = store.reconcile_processed_items_from_reviews()
+
+    assert updated == 2
+    deployed = store.get_processed_item("todo:task_1", "task_1:sub_1:/mnt/a")
+    human = store.get_processed_item("todo:task_2", "task_2:sub_1:/mnt/b")
+    missing = store.get_processed_item("todo:task_3", "task_3:sub_1:/mnt/c")
+    assert deployed["status"] == "deployed"
+    assert deployed["summary"] == "done"
+    assert human["status"] == "needs_human"
+    assert human["summary"] == "manual"
+    assert missing["status"] == "review_pending"

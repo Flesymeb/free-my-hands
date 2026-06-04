@@ -61,6 +61,9 @@ class CodexReviewAuditor:
 
     def run_forever(self) -> None:
         self._install_wake_signal_handler()
+        reconciled = self.store.reconcile_processed_items_from_reviews()
+        if reconciled:
+            log.info("reconciled %s processed item review status record(s)", reconciled)
         log.info(
             "codex review auditor started: interval=%ss max_parallel_deployments=%s",
             self.config.codex_review.interval_sec,
