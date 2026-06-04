@@ -246,10 +246,11 @@ class StateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT DISTINCT source_key
+                SELECT source_key, MAX(processed_at) AS last_processed_at
                 FROM processed_items
                 WHERE source_key LIKE 'todo:%'
-                ORDER BY processed_at DESC
+                GROUP BY source_key
+                ORDER BY last_processed_at DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -260,6 +261,17 @@ class StateStore:
             if task_id:
                 task_ids.append(task_id)
         return task_ids
+
+    def delete_legacy_aggregate_task_statuses(self) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM runtime_settings
+                WHERE key LIKE 'task_status:todo:%'
+                  AND key NOT LIKE 'task_status:todo:%:item:%'
+                """
+            )
+        return int(cursor.rowcount or 0)
 
     def create_review(
         self,

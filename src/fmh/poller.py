@@ -143,6 +143,9 @@ class FeishuPollingWorker:
         self._bot_open_id_checked = bool(self._bot_open_id)
 
     def run_forever(self) -> None:
+        removed = self.store.delete_legacy_aggregate_task_statuses()
+        if removed:
+            log.info("removed %s legacy aggregate task status record(s)", removed)
         log.info("polling started: interval=%ss", self.config.polling.interval_sec)
         while True:
             try:
@@ -268,7 +271,7 @@ class FeishuPollingWorker:
         checked = 0
         max_per_tick = max(0, int(self.config.polling.known_todo_max_per_tick))
         interval = max(0, int(self.config.polling.known_todo_check_interval_sec))
-        for task_id in self.store.list_todo_task_ids():
+        for task_id in self._known_todo_task_ids(now):
             if max_per_tick and checked >= max_per_tick:
                 break
             if self.store.get_setting(_disabled_todo_task_key(task_id)):
@@ -285,6 +288,33 @@ class FeishuPollingWorker:
             stats = stats.add(task_stats)
             checked += 1
         return stats
+
+    def _known_todo_task_ids(self, now: int) -> list[str]:
+        due = self._due_retry_todo_task_ids(now)
+        regular = self.store.list_todo_task_ids()
+        return list(_merge_unique(tuple(due), tuple(regular)))
+
+    def _due_retry_todo_task_ids(self, now: int) -> list[str]:
+        with self.store._connect() as conn:  # noqa: SLF001
+            rows = conn.execute(
+                """
+                SELECT source_key, item_id
+                FROM processed_items
+                WHERE source_key LIKE 'todo:%' AND status = 'retry_waiting'
+                ORDER BY processed_at ASC
+                """
+            ).fetchall()
+        out: list[str] = []
+        for row in rows:
+            task_key = str(row["source_key"] or "")
+            item_key = str(row["item_id"] or "")
+            retry_at = _safe_int(self.store.get_setting(_retry_setting_key(task_key, item_key)))
+            if retry_at > now:
+                continue
+            task_id = task_key.removeprefix("todo:")
+            if task_id and task_id not in out:
+                out.append(task_id)
+        return out
 
     def _task_has_due_retry(self, task_key: str, now: int) -> bool:
         with self.store._connect() as conn:  # noqa: SLF001
@@ -1101,8 +1131,9 @@ class FeishuPollingWorker:
             payload.setdefault("context", {})["subtask_guid"] = str(entry["subtask_guid"])
         self.store.create_review(packet.review_id, packet.stage.value, packet.subject_id, payload)
         if entry.get("task_key") and entry.get("source_chat_id"):
+            status_task_key = str(entry.get("status_task_key") or entry["task_key"])
             self._update_task_status_card(
-                str(entry["task_key"]),
+                status_task_key,
                 str(entry["source_chat_id"]),
                 "codex",
                 "待审核",

@@ -16,6 +16,9 @@ from fmh.feishu import FeishuOpenAPIClient, NullFeishuClient
 from fmh.operator_review import mention_text, review_result_card
 from fmh.reusable_workers import (
     DeployedModelRow,
+    ModelPathInfo,
+    build_plan_for_row,
+    choose_reusable_row,
     is_reusable_worker_state,
     parse_deployed_models_table,
     reuse_flag_allows_scan,
@@ -588,7 +591,17 @@ class ReusableDeploymentExecutor:
             return
         replacement = next((candidate for candidate in rows if candidate.ip == ip), None)
         if replacement is None:
-            raise ReusableDeploymentError(f"selected worker {ip} is no longer present in deployed-models document")
+            replacement = choose_reusable_row(
+                rows,
+                self.config.reusable_workers,
+                required_gpu_count=int(row.get("gpu_count") or 0),
+            )
+            if replacement is None:
+                raise ReusableDeploymentError(
+                    f"selected worker {ip} is no longer present in deployed-models document and no replacement worker is reusable"
+                )
+            self._replace_plan_row(plan, replacement, path)
+            return
         self._set_plan_row_if_safe(plan, replacement, path)
 
     def _set_plan_row_if_safe(self, plan: dict[str, Any], row: DeployedModelRow, path: dict[str, Any]) -> None:
@@ -600,6 +613,13 @@ class ReusableDeploymentExecutor:
             )
         original = plan.get("row") if isinstance(plan.get("row"), dict) else {}
         plan["row"] = {**original, **row_dict}
+
+    def _replace_plan_row(self, plan: dict[str, Any], row: DeployedModelRow, path: dict[str, Any]) -> None:
+        replacement = build_plan_for_row(_model_path_info_from_plan_path(path), row, self.config.reusable_workers).to_dict()
+        preserved = {key: value for key, value in plan.items() if key not in replacement}
+        plan.clear()
+        plan.update(replacement)
+        plan.update(preserved)
 
     def _mark_needs_human(self, review: dict[str, Any], decision: dict[str, Any], reason: str) -> None:
         review_id = str(review.get("review_id") or "")
@@ -1223,6 +1243,17 @@ def _current_row_safe_for_plan(row: dict[str, Any], path: dict[str, Any], config
     if _row_already_serves_model(row, path, config.reusable_workers.deploying_marker):
         return True
     return _row_can_auto_reuse(row, config)
+
+
+def _model_path_info_from_plan_path(path: dict[str, Any]) -> ModelPathInfo:
+    worker_path = _expect_str(path, "worker_path")
+    table_path = str(path.get("table_path") or worker_path.lstrip("/"))
+    return ModelPathInfo(
+        original_path=str(path.get("original_path") or worker_path),
+        worker_path=worker_path,
+        table_path=table_path,
+        model_id=_expect_str(path, "model_id"),
+    )
 
 
 def _expect_dict(parent: dict[str, Any], key: str) -> dict[str, Any]:

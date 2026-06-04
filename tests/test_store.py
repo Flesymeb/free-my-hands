@@ -67,3 +67,17 @@ def test_store_task_status(tmp_path) -> None:
 
     assert store.get_task_status("todo:task_1")["source_message_id"] == "om_1"
     assert store.get_task_status("missing") == {}
+
+
+def test_delete_legacy_aggregate_task_statuses_keeps_item_statuses(tmp_path) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.set_task_status("todo:task_1", {"source_message_id": "om_aggregate"})
+    store.set_task_status("todo:task_1:item:abc", {"source_message_id": "om_item"})
+    store.set_setting("task_status:chat:oc_1", "{}")
+
+    removed = store.delete_legacy_aggregate_task_statuses()
+
+    assert removed == 1
+    assert store.get_task_status("todo:task_1") == {}
+    assert store.get_task_status("todo:task_1:item:abc")["source_message_id"] == "om_item"
+    assert store.get_setting("task_status:chat:oc_1") == "{}"

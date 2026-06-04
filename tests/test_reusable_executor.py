@@ -655,6 +655,37 @@ def test_refresh_plan_row_rejects_stale_worker_that_became_fresh_untested(tmp_pa
         executor._refresh_plan_row_from_doc(plan, plan["path"])  # noqa: SLF001
 
 
+def test_refresh_plan_row_reselects_reusable_worker_when_selected_worker_missing(tmp_path) -> None:
+    markdown = _deployed_models_markdown(
+        [
+            ("old/free", "free", "192.0.2.156（4卡）", "tau2\nvita"),
+            ("other/model", "other-model", "192.0.2.200（4卡）", ""),
+        ]
+    )
+    config = AppConfig(storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")))
+    store = StateStore(config.storage.sqlite_path)
+    executor = ReusableDeploymentExecutor(config, store, MarkdownFeishuClient(markdown))  # type: ignore[arg-type]
+    plan = {
+        "row": {"row_index": 3, "ip": "192.0.2.2", "gpu_count": 4},
+        "path": {
+            "original_path": "/mnt/worker-models/team/model-a",
+            "worker_path": "/mnt/worker-models/team/model-a",
+            "table_path": "team/model-a",
+            "model_id": "model-a",
+        },
+        "weight_conversion": {"required": False},
+    }
+
+    executor._refresh_plan_row_from_doc(plan, plan["path"])  # noqa: SLF001
+
+    assert plan["row"]["ip"] == "192.0.2.156"
+    assert plan["row"]["row_index"] == 1
+    assert plan["tmux_session_guess"] == "ssh_4_gpu_2_156"
+    assert "--model /mnt/worker-models/team/model-a" in plan["vllm_command"]
+    assert plan["final_table_values"]["模型"] == "team/model-a"
+    assert plan["weight_conversion"] == {"required": False}
+
+
 def test_preflight_resolves_single_child_hf_model_dir(tmp_path) -> None:
     parent_path = "/mnt/gpfs/ma4agi-gpu/zhangbo/0521-1-preview-c1"
     child_path = f"{parent_path}/checkpoint-1819"

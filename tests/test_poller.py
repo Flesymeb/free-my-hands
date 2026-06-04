@@ -857,6 +857,35 @@ def test_manual_at_command_limits_known_task_rescan(tmp_path) -> None:
     assert len(fake.requested_tasks) == 1
 
 
+def test_due_retry_known_todo_task_is_prioritized_over_recent_regular_task(tmp_path) -> None:
+    fake = FakeFeishuClient(
+        [],
+        task={"guid": "task", "summary": "deploy batch"},
+        subtasks=[{"guid": "sub_1", "summary": "/mnt/models/model-a", "description": ""}],
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(
+            chat_ids=["oc_1"],
+            notify_chat_on_accept=True,
+            known_todo_max_per_tick=1,
+            known_todo_check_interval_sec=0,
+        ),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.mark_processed_item("todo:retry", "retry:sub_1:/mnt/models/model-a", "retry_waiting")
+    store.mark_processed_item("todo:regular", "regular:sub_1:/mnt/models/model-a", "deployed")
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    stats = worker.poll_once()
+
+    assert stats.submitted == 1
+    assert fake.requested_tasks == ["retry"]
+
+
 def test_polling_known_todo_task_treats_changed_subtask_as_new_card(tmp_path) -> None:
     now_ms = int(time.time()) * 1000
     fake = FakeFeishuClient(
@@ -1267,6 +1296,7 @@ def test_reusable_todo_multiple_new_subtasks_reserve_distinct_rows(tmp_path) -> 
     assert selected_ips == {"192.0.2.14", "192.0.2.15"}
     assert len(status_message_ids) == 2
     assert len(status_task_keys) == 2
+    assert store.get_task_status("todo:task_multi") == {}
 
 
 def test_reusable_todo_converts_matching_weight_path_before_planning(tmp_path) -> None:

@@ -294,6 +294,73 @@ def test_auditor_requeues_orphaned_inflight_reviews_after_restart(tmp_path, monk
         auditor.shutdown()
 
 
+def test_auditor_executes_recent_approved_review(tmp_path, monkeypatch) -> None:
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        reusable_workers=ReusableWorkersConfig(auto_deploy_approved=True),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.create_review(
+        "rvw-approved",
+        "reuse_row_selected",
+        "192.0.2.20:model-approved",
+        _review_payload("192.0.2.20", "model-approved"),
+        status="approved",
+    )
+    store.decide_review("rvw-approved", "approved", {"decision": "APPROVE", "source": "manual"})
+    auditor = CodexReviewAuditor(config, store, NullFeishuClient())
+    executed: list[str] = []
+
+    def fake_execute(review: dict[str, object], decision: dict[str, object]) -> bool:
+        executed.append(str(review["review_id"]))
+        store.decide_review(str(review["review_id"]), "deployed", {"deploy_status": "deployed"})
+        return True
+
+    monkeypatch.setattr(auditor.executor, "execute_if_enabled", fake_execute)
+    try:
+        count = auditor.process_once(wait=True)
+
+        assert count == 1
+        assert executed == ["rvw-approved"]
+        assert store.get_review("rvw-approved")["status"] == "deployed"
+    finally:
+        auditor.shutdown()
+
+
+def test_auditor_marks_stale_approved_review_needs_human(tmp_path, monkeypatch) -> None:
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        reusable_workers=ReusableWorkersConfig(auto_deploy_approved=True),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.create_review(
+        "rvw-stale",
+        "reuse_row_selected",
+        "192.0.2.20:model-stale",
+        _review_payload("192.0.2.20", "model-stale"),
+        status="approved",
+    )
+    store.decide_review("rvw-stale", "approved", {"decision": "APPROVE", "source": "manual"})
+    with store._connect() as conn:  # noqa: SLF001
+        conn.execute(
+            "UPDATE operator_reviews SET updated_at = ? WHERE review_id = ?",
+            ("2026-01-01T00:00:00+00:00", "rvw-stale"),
+        )
+    auditor = CodexReviewAuditor(config, store, NullFeishuClient())
+    executed: list[str] = []
+    monkeypatch.setattr(auditor.executor, "execute_if_enabled", lambda review, decision: executed.append("ran"))
+    try:
+        count = auditor.process_once(wait=True)
+
+        review = store.get_review("rvw-stale")
+        assert count == 0
+        assert executed == []
+        assert review["status"] == "needs_human"
+        assert review["decision"]["status"] == "stale_approved"
+    finally:
+        auditor.shutdown()
+
+
 def _review_payload(ip: str, model_id: str) -> dict[str, object]:
     return {
         "review_id": f"rvw-{ip}-{model_id}",

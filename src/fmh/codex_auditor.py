@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime
 import json
 import logging
 import re
@@ -30,6 +31,7 @@ from fmh.task_status import task_status_card, task_status_with_stage
 from fmh.time_utils import utc_now_iso
 
 log = logging.getLogger(__name__)
+_STALE_APPROVED_REVIEW_SEC = 3600
 
 
 class CodexAuditError(RuntimeError):
@@ -77,10 +79,14 @@ class CodexReviewAuditor:
     def process_once(self, *, wait: bool = False) -> int:
         self._collect_finished()
         self._recover_orphaned_inflight_reviews()
+        self._recover_stale_approved_reviews()
         count = 0
         started_review_ids: list[str] = []
         active_workers = self._active_workers()
-        for status in ("pending", "retry_requested"):
+        statuses = ["pending", "retry_requested"]
+        if self.config.reusable_workers.auto_deploy_approved:
+            statuses.append("approved")
+        for status in statuses:
             for review in self.store.list_reviews(limit=20, status=status):
                 if self.active_count() >= self.max_parallel_deployments:
                     break
@@ -90,11 +96,22 @@ class CodexReviewAuditor:
                 review_id = str(review.get("review_id") or "")
                 if not review_id:
                     continue
+                claim_status = "deploying" if status == "approved" else "codex_reviewing"
+                claim_decision = {"source": "auditor", "status": "claimed", "claimed_at": utc_now_iso()}
+                if status == "approved":
+                    previous = review.get("decision") if isinstance(review.get("decision"), dict) else {}
+                    claim_decision = {
+                        **previous,
+                        "decision": "APPROVE",
+                        "source": str(previous.get("source") or "auditor"),
+                        "status": "claimed_approved",
+                        "claimed_at": utc_now_iso(),
+                    }
                 if not self.store.claim_review(
                     review_id,
                     from_statuses=(status,),
-                    to_status="codex_reviewing",
-                    decision={"source": "auditor", "status": "claimed", "claimed_at": utc_now_iso()},
+                    to_status=claim_status,
+                    decision=claim_decision,
                 ):
                     continue
                 claimed = self.store.get_review(review_id) or review
@@ -177,6 +194,28 @@ class CodexReviewAuditor:
                 )
                 log.warning("requeued orphaned in-flight review after restart: %s from %s", review_id, status)
 
+    def _recover_stale_approved_reviews(self) -> None:
+        for review in self.store.list_reviews(limit=100, status="approved"):
+            age = _review_age_sec(review)
+            if age < _STALE_APPROVED_REVIEW_SEC:
+                continue
+            review_id = str(review.get("review_id") or "")
+            if not review_id:
+                continue
+            decision = review.get("decision") if isinstance(review.get("decision"), dict) else {}
+            self.store.decide_review(
+                review_id,
+                "needs_human",
+                {
+                    **decision,
+                    "source": "auditor",
+                    "status": "stale_approved",
+                    "summary": "历史 approved review 超过 1 小时未执行，已转人工以避免误部署。",
+                    "decided_at": utc_now_iso(),
+                },
+            )
+            log.warning("marked stale approved review as needs_human: %s", review_id)
+
     def _active_workers(self) -> set[str]:
         active: set[str] = set()
         with self._futures_lock:
@@ -205,6 +244,10 @@ class CodexReviewAuditor:
     def _process_review(self, review: dict[str, Any]) -> None:
         review_id = str(review["review_id"])
         payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
+        existing_decision = review.get("decision") if isinstance(review.get("decision"), dict) else {}
+        if str(review.get("status") or "") == "deploying" and str(existing_decision.get("decision") or "").upper() == "APPROVE":
+            self.executor.execute_if_enabled(review, existing_decision)
+            return
         policy_decision = deterministic_review_decision(self.config, payload)
         if policy_decision is not None:
             status = review_status_for_decision(str(policy_decision["decision"]))
@@ -483,6 +526,18 @@ def _row_address(row: dict[str, Any]) -> str:
     if ip and gpu_count:
         return f"{ip} ({gpu_count}卡)"
     return ip or str(row.get("address") or "").strip()
+
+
+def _review_age_sec(review: dict[str, Any]) -> float:
+    updated_at = str(review.get("updated_at") or review.get("created_at") or "")
+    if not updated_at:
+        return 0.0
+    try:
+        updated = datetime.fromisoformat(updated_at)
+    except ValueError:
+        return 0.0
+    now = datetime.now(updated.tzinfo)
+    return max(0.0, (now - updated).total_seconds())
 
 
 def _review_worker(review: dict[str, Any]) -> str:
