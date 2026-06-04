@@ -18,7 +18,7 @@ from fmh.config import (
 )
 from fmh.models import RequestStatus
 from fmh.orchestrator import DeploymentOrchestrator
-from fmh.poller import FeishuPollingWorker, _extract_weight_path_from_line, _task_item_status_key
+from fmh.poller import FeishuPollingWorker, _disabled_todo_task_key, _extract_weight_path_from_line, _task_item_status_key
 from fmh.runner import make_runner
 from fmh.store import StateStore
 
@@ -884,6 +884,29 @@ def test_due_retry_known_todo_task_is_prioritized_over_recent_regular_task(tmp_p
 
     assert stats.submitted == 1
     assert fake.requested_tasks == ["retry"]
+
+
+def test_disabled_known_todo_task_clears_retry_waiting_items(tmp_path) -> None:
+    fake = FakeFeishuClient([])
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], known_todo_max_per_tick=1),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    item_key = "deleted:sub_1:/mnt/models/model-a"
+    store.mark_processed_item("todo:deleted", item_key, "retry_waiting")
+    store.set_setting(_disabled_todo_task_key("deleted"), "task deleted")
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    stats = worker.poll_once()
+
+    processed = store.get_processed_item("todo:deleted", item_key)
+    assert stats.submitted == 0
+    assert fake.requested_tasks == []
+    assert processed["status"] == "task_unavailable"
+    assert processed["summary"] == "task deleted"
 
 
 def test_polling_known_todo_task_treats_changed_subtask_as_new_card(tmp_path) -> None:

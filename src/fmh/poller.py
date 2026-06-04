@@ -274,7 +274,9 @@ class FeishuPollingWorker:
         for task_id in self._known_todo_task_ids(now):
             if max_per_tick and checked >= max_per_tick:
                 break
-            if self.store.get_setting(_disabled_todo_task_key(task_id)):
+            disabled_reason = self.store.get_setting(_disabled_todo_task_key(task_id))
+            if disabled_reason:
+                self._mark_disabled_retry_items(task_id, disabled_reason)
                 continue
             task_key = f"todo:{task_id}"
             due_retry = self._task_has_due_retry(task_key, now)
@@ -315,6 +317,24 @@ class FeishuPollingWorker:
             if task_id and task_id not in out:
                 out.append(task_id)
         return out
+
+    def _mark_disabled_retry_items(self, task_id: str, reason: str) -> None:
+        task_key = f"todo:{task_id}"
+        with self.store._connect() as conn:  # noqa: SLF001
+            rows = conn.execute(
+                """
+                SELECT item_id FROM processed_items
+                WHERE source_key = ? AND status = 'retry_waiting'
+                """,
+                (task_key,),
+            ).fetchall()
+        for row in rows:
+            self.store.mark_processed_item(
+                task_key,
+                str(row["item_id"] or ""),
+                "task_unavailable",
+                summary=str(reason or "todo task is unavailable"),
+            )
 
     def _task_has_due_retry(self, task_key: str, now: int) -> bool:
         with self.store._connect() as conn:  # noqa: SLF001
