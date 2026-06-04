@@ -11,6 +11,8 @@ import time
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
+import httpx
+
 from fmh.approval import decide_review
 from fmh.config import AppConfig
 from fmh.models import EventSource, Requester, SourceType
@@ -160,6 +162,25 @@ class FeishuPollingWorker:
             stats = stats.add(self._poll_known_todo_tasks(force=lookback_sec is not None))
         return stats
 
+    def process_message_item(self, chat_id: str, item: dict[str, Any]) -> PollStats:
+        msg_id = str(item.get("message_id") or item.get("msg_id") or "")
+        if not chat_id or not msg_id:
+            return PollStats(scanned=1, ignored=1)
+        source_key = f"chat:{chat_id}"
+        if self.store.has_processed_item(source_key, msg_id):
+            return PollStats()
+        return self._handle_message_item(chat_id, source_key, item, msg_id)
+
+    def process_todo_task(self, task_id: str, *, chat_id: str = "") -> PollStats:
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            return PollStats(scanned=1, ignored=1)
+        task_key = f"todo:{task_id}"
+        if not chat_id:
+            chat_id = self.store.get_setting(f"todo_task_source_chat:{task_id}") or ""
+        stats, _, _ = self._process_task_subtasks(task_id, task_key, chat_id=chat_id)
+        return stats
+
     def _poll_chat(self, chat_id: str, *, lookback_sec: int | None) -> PollStats:
         source_key = f"chat:{chat_id}"
         now = int(time.time())
@@ -232,6 +253,8 @@ class FeishuPollingWorker:
         for task_id in self.store.list_todo_task_ids():
             if max_per_tick and checked >= max_per_tick:
                 break
+            if self.store.get_setting(_disabled_todo_task_key(task_id)):
+                continue
             task_key = f"todo:{task_id}"
             due_retry = self._task_has_due_retry(task_key, now)
             if not force and not due_retry and interval:
@@ -295,8 +318,9 @@ class FeishuPollingWorker:
             return self._handle_codex_control_command(chat_id, source_key, msg_id, control)
         if _parse_help_command(text, mentions_current_bot=mentions_current_bot):
             return self._handle_help_command(chat_id, source_key, msg_id)
-        if _parse_node_status_command(text):
-            return self._handle_node_status_command(chat_id, source_key, msg_id)
+        node_probe = _parse_node_probe_command(text)
+        if node_probe or _parse_node_status_command(text):
+            return self._handle_node_status_command(chat_id, source_key, msg_id, probe_health=node_probe)
         if _parse_manual_poll_command(text):
             return self._handle_manual_poll_command(chat_id, source_key, msg_id)
 
@@ -373,8 +397,18 @@ class FeishuPollingWorker:
             parent = self.feishu.get_task(task_id)
             subtasks = self.feishu.list_subtasks(task_id, page_size=self.config.polling.page_size)
         except Exception as exc:
+            if _is_task_unavailable_error(exc):
+                self.store.set_setting(_disabled_todo_task_key(task_id), str(exc))
+                self.store.mark_processed_item(
+                    task_key,
+                    "__task_fetch__",
+                    "task_unavailable",
+                    summary=str(exc),
+                )
+                return PollStats(scanned=1, ignored=1), [], 0
             self.store.mark_processed_item(task_key, f"fetch:{int(time.time())}", "failed_task_fetch", summary=str(exc))
             return PollStats(scanned=1, failed=1), [], 1
+        self.store.delete_setting(_disabled_todo_task_key(task_id))
 
         entries = _deployment_entries_from_task(parent, subtasks, self.config.polling.relative_weight_path_prefix)
         entries = [_apply_weight_conversion_to_entry(entry, self.config) for entry in entries]
@@ -711,7 +745,14 @@ class FeishuPollingWorker:
             )
         return PollStats(scanned=1, ignored=1)
 
-    def _handle_node_status_command(self, chat_id: str, source_key: str, msg_id: str) -> PollStats:
+    def _handle_node_status_command(
+        self,
+        chat_id: str,
+        source_key: str,
+        msg_id: str,
+        *,
+        probe_health: bool = False,
+    ) -> PollStats:
         self.store.mark_processed_item(source_key, msg_id, "node_status", summary="node status requested")
         if not chat_id or not self.config.polling.notify_chat_on_accept:
             return PollStats(scanned=1, ignored=1)
@@ -728,6 +769,8 @@ class FeishuPollingWorker:
         try:
             content = self.feishu.get_doc_markdown(doc_token)
             rows = parse_deployed_models_table(content)
+            should_probe = probe_health or bool(self.config.reusable_workers.node_health_probe_enabled)
+            health = _probe_node_health(rows, self.config.reusable_workers) if should_probe else {}
         except Exception as exc:
             self._send_chat_card_or_text(
                 chat_id,
@@ -739,8 +782,8 @@ class FeishuPollingWorker:
 
         self._send_chat_card_or_text(
             chat_id,
-            _node_status_card(rows, self.config.reusable_workers),
-            _node_status_fallback(rows, self.config.reusable_workers),
+            _node_status_card(rows, self.config.reusable_workers, health=health),
+            _node_status_fallback(rows, self.config.reusable_workers, health=health),
             reply_to_message_id=msg_id,
         )
         return PollStats(scanned=1, ignored=1)
@@ -1191,6 +1234,22 @@ def _parse_node_status_command(text: str) -> bool:
         "检测worker",
         "检查worker",
         "worker状态",
+    }
+
+
+def _parse_node_probe_command(text: str) -> bool:
+    stripped = _manual_command_text(text)
+    return stripped in {
+        "巡检节点",
+        "节点巡检",
+        "节点健康",
+        "健康节点",
+        "深度检测节点",
+        "深度检查节点",
+        "health nodes",
+        "node health",
+        "worker health",
+        "doctor nodes",
     }
 
 
@@ -1760,8 +1819,18 @@ def _known_todo_checked_key(task_id: str) -> str:
     return f"known_todo_checked_at:{digest}"
 
 
+def _disabled_todo_task_key(task_id: str) -> str:
+    digest = hashlib.sha1(task_id.encode("utf-8")).hexdigest()[:20]
+    return f"todo_task_disabled:{digest}"
+
+
 def _is_no_reusable_worker_error(exc: Exception) -> bool:
     return "no reusable deployed-model row is available" in str(exc)
+
+
+def _is_task_unavailable_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "feishu http 404" in text or "404 not found" in text
 
 
 def _is_out_of_chat_error(exc: Exception) -> bool:
@@ -1823,6 +1892,7 @@ def _help_card() -> dict[str, Any]:
     command_lines = [
         "**检测任务** · 扫描最近任务分享和已跟踪子任务",
         "**检测节点** · 查看已部署模型文档里的 worker 可用情况",
+        "**巡检节点** · 探测 worker /v1/models，发现服务不可达或模型不匹配",
         "**codex on/off/status** · 开关或查看 Codex 审核",
         "**回复卡片：重试 / 取消** · 处理失败部署",
     ]
@@ -1850,15 +1920,20 @@ def _help_card() -> dict[str, Any]:
     }
 
 
-def _node_status_card(rows: list[Any], config: Any) -> dict[str, Any]:
+def _node_status_card(rows: list[Any], config: Any, *, health: dict[int, dict[str, str]] | None = None) -> dict[str, Any]:
+    health = health or {}
     counts = _node_status_counts(rows, config)
+    health_counts = _node_health_counts(health)
     available = counts["idle"] + counts["reusable"]
     valid_total = max(0, len(rows) - counts["invalid"])
-    color = "green" if available else "orange" if rows else "red"
+    color = "red" if health_counts["error"] else "orange" if health_counts["warn"] else "green" if available else "orange" if rows else "red"
     summary_parts = [
         f"**可用节点** {_tag(str(available), 'green' if available else 'grey')}",
         f"**总节点** {valid_total}",
     ]
+    if health:
+        abnormal = health_counts["warn"] + health_counts["error"]
+        summary_parts.append(f"健康异常 {abnormal}" if abnormal else f"健康正常 {health_counts['ok']}")
     if counts["running"]:
         summary_parts.append(f"运行中 {counts['running']}")
     if counts.get("blocked", 0):
@@ -1872,7 +1947,7 @@ def _node_status_card(rows: list[Any], config: Any) -> dict[str, Any]:
     if not rows:
         detail = "未从已部署模型文档解析到节点表。"
     else:
-        lines = [_node_status_line(row, config) for row in rows[:30]]
+        lines = [_node_status_line(row, config, health=health) for row in rows[:30]]
         if len(rows) > 30:
             lines.append(f"还有 {len(rows) - 30} 个节点未显示。")
         detail = "**节点明细**\n" + "\n".join(lines)
@@ -1895,9 +1970,14 @@ def _node_status_card(rows: list[Any], config: Any) -> dict[str, Any]:
     }
 
 
-def _node_status_fallback(rows: list[Any], config: Any) -> str:
+def _node_status_fallback(rows: list[Any], config: Any, *, health: dict[int, dict[str, str]] | None = None) -> str:
     counts = _node_status_counts(rows, config)
     available = counts["idle"] + counts["reusable"]
+    health = health or {}
+    if health:
+        health_counts = _node_health_counts(health)
+        abnormal = health_counts["warn"] + health_counts["error"]
+        return f"节点状态：可用 {available} / 总节点 {max(0, len(rows) - counts['invalid'])} / 健康异常 {abnormal}"
     return f"节点状态：可用 {available} / 总节点 {max(0, len(rows) - counts['invalid'])}"
 
 
@@ -1909,7 +1989,7 @@ def _node_status_counts(rows: list[Any], config: Any) -> dict[str, int]:
     return counts
 
 
-def _node_status_line(row: Any, config: Any) -> str:
+def _node_status_line(row: Any, config: Any, *, health: dict[int, dict[str, str]] | None = None) -> str:
     _, label, color, detail = _node_row_status(row, config)
     ip = str(getattr(row, "ip", "") or "").strip()
     gpu_count = int(getattr(row, "gpu_count", 0) or 0)
@@ -1917,7 +1997,15 @@ def _node_status_line(row: Any, config: Any) -> str:
     model_id = str(getattr(row, "model_id", "") or "").strip()
     if not model_id:
         model_id = _short_text(str(getattr(row, "model", "") or "-"), 42)
-    return f"{_tag(label, color)} {_md_escape(address)} · {_md_escape(_short_text(model_id or '-', 42))} · {_md_escape(detail)}"
+    health_part = _node_health_part(row, health or {})
+    parts = [
+        f"{_tag(label, color)} {_md_escape(address)}",
+        _md_escape(_short_text(model_id or "-", 42)),
+        _md_escape(detail),
+    ]
+    if health_part:
+        parts.append(health_part)
+    return " · ".join(parts)
 
 
 def _node_row_status(row: Any, config: Any) -> tuple[str, str, str, str]:
@@ -1937,6 +2025,81 @@ def _node_row_status(row: Any, config: Any) -> tuple[str, str, str, str]:
     if row.is_fresh_untested():
         return "fresh", "待测试", "orange", "新部署未测试"
     return "partial", "测试未完成", "grey", _short_text(str(getattr(row, "tested_tasks", "") or "未满足 required tasks"), 48)
+
+
+def _probe_node_health(rows: list[Any], config: Any) -> dict[int, dict[str, str]]:
+    health: dict[int, dict[str, str]] = {}
+    timeout = max(0.2, float(getattr(config, "node_health_timeout_sec", 2.0) or 2.0))
+    port = int(getattr(config, "default_port", 8000) or 8000)
+    for row in rows:
+        row_index = int(getattr(row, "row_index", 0) or 0)
+        ip = str(getattr(row, "ip", "") or "").strip()
+        if not row_index or not ip:
+            continue
+        if hasattr(row, "reuse_allows_scan") and not row.reuse_allows_scan():
+            health[row_index] = {"level": "skipped", "label": "未巡检", "detail": "复用=no"}
+            continue
+        endpoint = f"http://{ip}:{port}/v1/models"
+        try:
+            response = httpx.get(endpoint, timeout=timeout)
+            response.raise_for_status()
+            model_ids = _vllm_model_ids(response.json())
+        except Exception as exc:
+            is_idle = getattr(row, "is_idle_empty", lambda: False)
+            if callable(is_idle) and is_idle():
+                health[row_index] = {"level": "ok", "label": "空闲", "detail": "无服务响应"}
+            else:
+                health[row_index] = {"level": "error", "label": "不可达", "detail": _short_text(str(exc), 80)}
+            continue
+        expected_model_id = str(getattr(row, "model_id", "") or "").strip()
+        is_idle = getattr(row, "is_idle_empty", lambda: False)
+        if callable(is_idle) and is_idle():
+            detail = f"空闲行仍返回 {_short_text(', '.join(model_ids) or 'unknown', 80)}"
+            health[row_index] = {"level": "warn", "label": "残留服务", "detail": detail}
+        elif expected_model_id and expected_model_id in model_ids:
+            health[row_index] = {"level": "ok", "label": "正常", "detail": "/v1/models 匹配"}
+        elif model_ids:
+            detail = f"返回 {_short_text(', '.join(model_ids), 80)}"
+            health[row_index] = {"level": "warn", "label": "模型不匹配", "detail": detail}
+        else:
+            health[row_index] = {"level": "warn", "label": "无模型", "detail": "/v1/models 无 data.id"}
+    return health
+
+
+def _vllm_model_ids(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    items = payload.get("data")
+    if not isinstance(items, list):
+        return []
+    model_ids: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        if model_id and model_id not in model_ids:
+            model_ids.append(model_id)
+    return model_ids
+
+
+def _node_health_counts(health: dict[int, dict[str, str]]) -> dict[str, int]:
+    counts = {"ok": 0, "warn": 0, "error": 0, "skipped": 0}
+    for item in health.values():
+        level = str(item.get("level") or "warn")
+        counts[level] = counts.get(level, 0) + 1
+    return counts
+
+
+def _node_health_part(row: Any, health: dict[int, dict[str, str]]) -> str:
+    item = health.get(int(getattr(row, "row_index", 0) or 0))
+    if not item:
+        return ""
+    level = str(item.get("level") or "warn")
+    color = {"ok": "green", "warn": "orange", "error": "red", "skipped": "grey"}.get(level, "grey")
+    label = str(item.get("label") or "健康未知")
+    detail = str(item.get("detail") or "")
+    text = label if not detail else f"{label}: {detail}"
+    return f"{_tag(text, color)}"
 
 
 def _manual_poll_result_card(

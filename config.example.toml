@@ -71,6 +71,10 @@ deploy_poll_interval_sec = 15
 # Deployments on different workers may run concurrently. Same-worker operations
 # and deployed-model document writes remain serialized by the auditor.
 max_parallel_deployments = 2
+# If enabled, normal "检测节点" also probes worker /v1/models. Otherwise use
+# the explicit "巡检节点" group command for health probing.
+node_health_probe_enabled = false
+node_health_timeout_sec = 2.0
 
 [weight_conversion]
 # Optional pre-deploy conversion for paths that need a separate checkpoint-to-HF step.

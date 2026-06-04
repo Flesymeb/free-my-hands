@@ -33,6 +33,7 @@ class FakeFeishuClient:
         doc_markdown: str = "",
         chats: list[dict[str, Any]] | None = None,
         message_errors_by_chat: dict[str, Exception] | None = None,
+        task_errors_by_guid: dict[str, Exception] | None = None,
     ) -> None:
         self.messages = messages
         self.task = task or {}
@@ -40,6 +41,7 @@ class FakeFeishuClient:
         self.doc_markdown = doc_markdown
         self.chats = chats or []
         self.message_errors_by_chat = message_errors_by_chat or {}
+        self.task_errors_by_guid = task_errors_by_guid or {}
         self.chat_texts: list[tuple[str, str]] = []
         self.sent_cards: list[dict[str, Any]] = []
         self.patched_cards: list[tuple[str, dict[str, Any]]] = []
@@ -87,6 +89,8 @@ class FakeFeishuClient:
 
     def get_task(self, task_guid: str) -> dict[str, Any]:
         self.requested_tasks.append(task_guid)
+        if task_guid in self.task_errors_by_guid:
+            raise self.task_errors_by_guid[task_guid]
         return self.task
 
     def list_subtasks(self, task_guid: str, page_size: int = 50) -> list[dict[str, Any]]:
@@ -507,6 +511,7 @@ def test_at_only_command_returns_help_card(tmp_path) -> None:
     rendered = json.dumps(fake.sent_cards[-1], ensure_ascii=False)
     assert "检测任务" in rendered
     assert "检测节点" in rendered
+    assert "巡检节点" in rendered
     assert "codex on/off/status" in rendered
 
 
@@ -561,6 +566,78 @@ def test_node_status_command_reports_worker_counts(tmp_path) -> None:
     assert "测试未完成 1" in rendered
     assert "192.0.2.10" in rendered
     assert "192.0.2.14" in rendered
+
+
+def test_node_health_command_probes_reusable_workers_only(tmp_path, monkeypatch) -> None:
+    class FakeResponse:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self.payload
+
+    calls: list[str] = []
+
+    def fake_get(url: str, *, timeout: float):
+        calls.append(url)
+        if "192.0.2.10" in url:
+            return FakeResponse({"data": [{"id": "model-a"}]})
+        if "192.0.2.11" in url:
+            return FakeResponse({"data": [{"id": "leftover"}]})
+        if "192.0.2.12" in url:
+            raise RuntimeError("connect failed")
+        raise AssertionError(f"unexpected probe: {url}")
+
+    monkeypatch.setattr("fmh.poller.httpx.get", fake_get)
+    now_ms = int(time.time()) * 1000
+    markdown = """<table><tbody>
+<tr><td>复用</td><td>模型</td><td>模型id</td><td>地址</td><td>推理工具调用解析器</td><td>推理解析器</td><td>SSH转发命令</td><td>已经测试完的任务</td><td>vpn排除命令</td></tr>
+<tr><td>yes</td><td>old/model-a</td><td>model-a</td><td>192\\.0\\.2\\.10（4卡）</td><td></td><td></td><td></td><td>tau2<br/>vita</td><td></td></tr>
+<tr><td>yes</td><td></td><td></td><td>192\\.0\\.2\\.11（4卡）</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>yes</td><td>old/model-b</td><td>model-b</td><td>192\\.0\\.2\\.12（4卡）</td><td></td><td></td><td></td><td>tau2<br/>vita</td><td></td></tr>
+<tr><td>no</td><td>private/model</td><td>private</td><td>192\\.0\\.2\\.13（4卡）</td><td></td><td></td><td></td><td>tau2<br/>vita</td><td></td></tr>
+</tbody></table>"""
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_nodes",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+                "body": {"content": '{"text":"@_user_1 巡检节点"}'},
+                "mentions": [{"id": "ou_bot", "id_type": "open_id", "key": "@_user_1", "name": "模型部署bot"}],
+            }
+        ],
+        doc_markdown=markdown,
+    )
+    config = AppConfig(
+        feishu=FeishuConfig(app_id="cli_bot"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True),
+        reusable_workers=ReusableWorkersConfig(deployed_models_doc_token="doc_token"),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    worker.poll_once()
+
+    rendered = json.dumps(fake.sent_cards[-1], ensure_ascii=False)
+    assert "健康异常 2" in rendered
+    assert "正常" in rendered
+    assert "残留服务" in rendered
+    assert "不可达" in rendered
+    assert "未巡检" in rendered
+    assert any("192.0.2.10" in call for call in calls)
+    assert any("192.0.2.11" in call for call in calls)
+    assert any("192.0.2.12" in call for call in calls)
+    assert not any("192.0.2.13" in call for call in calls)
 
 
 def test_polling_auto_discovers_joined_chats(tmp_path) -> None:
@@ -780,6 +857,52 @@ def test_polling_known_todo_task_picks_up_new_subtask_as_new_card(tmp_path) -> N
     assert first_status_message_id
     assert second_status_message_id
     assert second_status_message_id != first_status_message_id
+
+
+def test_known_todo_task_404_is_disabled_until_reshared_successfully(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [],
+        task={"guid": "task_deleted", "summary": "deploy batch"},
+        subtasks=[{"guid": "sub_1", "summary": "/mnt/models/model-a", "description": ""}],
+        task_errors_by_guid={"task_deleted": RuntimeError("Feishu HTTP 404: 404 Not Found")},
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.mark_processed_item("todo:task_deleted", "task_deleted:old:/mnt/models/old", "deployed")
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    first = worker.poll_once(lookback_sec=60)
+    second = worker.poll_once(lookback_sec=60)
+
+    assert first.failed == 0
+    assert first.ignored == 1
+    assert fake.requested_tasks == ["task_deleted"]
+    assert store.get_processed_item("todo:task_deleted", "__task_fetch__")["status"] == "task_unavailable"
+    assert second.submitted == 0
+    assert fake.requested_tasks == ["task_deleted"]
+
+    fake.messages = [
+        {
+            "message_id": "om_todo",
+            "msg_type": "todo",
+            "create_time": str(now_ms),
+            "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+            "body": {"content": '{"task_id":"task_deleted"}'},
+        }
+    ]
+    fake.task_errors_by_guid = {}
+    third = worker.poll_once(lookback_sec=60)
+
+    assert fake.requested_tasks.count("task_deleted") >= 2
+    assert third.submitted == 1
+    assert store.get_processed_item("todo:task_deleted", "task_deleted:sub_1:/mnt/models/model-a")["status"] == "submitted"
 
 
 def test_polling_todo_task_skips_done_and_active_entries_processes_new_only(tmp_path) -> None:

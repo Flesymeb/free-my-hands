@@ -105,6 +105,8 @@ class ReusableWorkersConfig:
     deploy_timeout_sec: int = 1800
     deploy_poll_interval_sec: int = 15
     max_parallel_deployments: int = 2
+    node_health_probe_enabled: bool = False
+    node_health_timeout_sec: float = 2.0
 
 
 @dataclass(frozen=True)

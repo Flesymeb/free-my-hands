@@ -362,6 +362,10 @@ class StateStore:
                 (key, value, now),
             )
 
+    def delete_setting(self, key: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM runtime_settings WHERE key = ?", (key,))
+
     def get_task_status(self, task_key: str) -> dict[str, object]:
         raw = self.get_setting(f"task_status:{task_key}")
         if not raw:

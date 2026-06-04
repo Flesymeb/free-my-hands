@@ -55,13 +55,18 @@ pytest -q
 ```
 
 In a Feishu group, send `@bot 检测任务` or `@bot 刷新任务` to force a recent
-task scan. If nothing new is found, the bot replies `目前无新任务`.
+task scan. If nothing new is found, the bot replies `目前无新任务`. Send
+`@bot 检测节点` for the deployed-models document summary, or `@bot 巡检节点`
+to also probe worker `/v1/models` and flag unreachable, mismatched, or leftover
+services.
 
 ## Config Notes
 
 - Keep `[runner].mode = "dry-run"` until templates and Feishu permissions are verified.
 - Use `[runner].mode = "tmux"` for real deployment.
 - Tune `[reusable_workers].max_parallel_deployments` to control concurrent deployments.
+- Use `[reusable_workers].node_health_probe_enabled` if normal node-status
+  commands should also run `/v1/models` health probes.
 - Configure `[weight_conversion]` when non-HF checkpoints need conversion before vLLM deployment. With format detection enabled, broad roots are safe: HF-style directories are skipped, and DistCP-style directories are converted.
 - Configure human fallback mentions under `[approval]`; do not hard-code names in code.
 - Configure follow-up bot notification under `[post_deploy_notify]`.

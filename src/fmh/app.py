@@ -19,6 +19,7 @@ from fmh.models import EventSource, Requester, SourceType
 from fmh.orchestrator import DeploymentOrchestrator
 from fmh.operator_review import review_result_card
 from fmh.parser import ParseError, parse_deployment_request
+from fmh.poller import FeishuPollingWorker, PollStats
 from fmh.reusable_executor import ReusableDeploymentExecutor
 from fmh.runner import make_runner
 from fmh.store import StateStore, serialize_requests
@@ -75,6 +76,34 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     background_tasks.add_task(executor.execute_if_enabled, review, decision)
                 _try_send_review_result(feishu_client, config, review)
                 return {"toast": {"type": "success", "content": "review decision recorded"}}
+            message_event = _extract_message_event(body)
+            if message_event is not None:
+                chat_id, item = message_event
+                background_tasks.add_task(
+                    _process_message_event,
+                    config,
+                    store,
+                    feishu_client,
+                    orchestrator,
+                    chat_id,
+                    item,
+                )
+                return {
+                    "accepted": True,
+                    "source": "message_event",
+                    "message_id": str(item.get("message_id") or item.get("msg_id") or ""),
+                }
+            task_id = _extract_task_event_id(body)
+            if task_id:
+                background_tasks.add_task(
+                    _process_task_event,
+                    config,
+                    store,
+                    feishu_client,
+                    orchestrator,
+                    task_id,
+                )
+                return {"accepted": True, "source": "task_event", "task_id": task_id}
             source = normalizer.normalize(body)
             request = parse_deployment_request(source)
         except KeyError as exc:
@@ -116,6 +145,69 @@ def create_app(config_path: str | None = None) -> FastAPI:
         }
 
     return app
+
+
+def _process_message_event(
+    config: AppConfig,
+    store: StateStore,
+    feishu_client: Any,
+    orchestrator: DeploymentOrchestrator,
+    chat_id: str,
+    item: dict[str, Any],
+) -> PollStats:
+    worker = FeishuPollingWorker(config, store, feishu_client, orchestrator)
+    return worker.process_message_item(chat_id, item)
+
+
+def _process_task_event(
+    config: AppConfig,
+    store: StateStore,
+    feishu_client: Any,
+    orchestrator: DeploymentOrchestrator,
+    task_id: str,
+) -> PollStats:
+    worker = FeishuPollingWorker(config, store, feishu_client, orchestrator)
+    return worker.process_todo_task(task_id)
+
+
+def _extract_message_event(body: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    event = body.get("event") if isinstance(body.get("event"), dict) else {}
+    message = event.get("message") if isinstance(event.get("message"), dict) else {}
+    if not message:
+        return None
+    header = body.get("header") if isinstance(body.get("header"), dict) else {}
+    event_type = str(header.get("event_type") or body.get("type") or "")
+    if event_type and event_type != "im.message.receive_v1":
+        return None
+    chat_id = str(message.get("chat_id") or event.get("chat_id") or "")
+    item = dict(message)
+    if "body" not in item and "content" in item:
+        item["body"] = {"content": item.get("content")}
+    if "sender" not in item and isinstance(event.get("sender"), dict):
+        item["sender"] = event["sender"]
+    if "mentions" not in item and isinstance(message.get("mentions"), list):
+        item["mentions"] = message["mentions"]
+    return chat_id, item
+
+
+def _extract_task_event_id(body: dict[str, Any]) -> str:
+    header = body.get("header") if isinstance(body.get("header"), dict) else {}
+    event_type = str(header.get("event_type") or body.get("type") or "")
+    if event_type and not event_type.startswith("task."):
+        return ""
+    event = body.get("event") if isinstance(body.get("event"), dict) else {}
+    candidates = [
+        event.get("task_guid"),
+        event.get("task_id"),
+        event.get("guid"),
+        event.get("obj_token"),
+    ]
+    task = event.get("task") if isinstance(event.get("task"), dict) else {}
+    candidates.extend([task.get("guid"), task.get("task_id")])
+    for value in candidates:
+        if value:
+            return str(value)
+    return ""
 
 
 def _try_notify_parse_error(feishu_client: Any, body: dict[str, Any], error: str) -> None:
