@@ -20,6 +20,7 @@ from fmh.reusable_executor import (
     RemoteResult,
     ReusableDeploymentExecutor,
     ReusableDeploymentError,
+    _classify_deployment_error,
     _gpu_app_pids,
     _row_can_auto_reuse,
     _worker_reconnect_command,
@@ -1021,6 +1022,24 @@ bad row
 """
 
     assert _gpu_app_pids(output) == ["649316", "649272"]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_type"),
+    [
+        ("weight conversion failed (137): loading model", "weight_conversion"),
+        ("can't find window: ssh", "worker_tmux_disconnected"),
+        ("worker GPUs are not idle: 649316", "gpu_busy"),
+        ("Feishu HTTP 401: Authentication token expired", "feishu_auth"),
+        ("Feishu HTTP 403: no permission", "feishu_permission"),
+    ],
+)
+def test_deployment_error_classifier_labels_common_failures(error: str, expected_type: str) -> None:
+    classified = _classify_deployment_error(error)
+
+    assert classified["type"] == expected_type
+    assert classified["label"]
+    assert classified["action"]
 
 
 def _review_payload() -> dict[str, Any]:

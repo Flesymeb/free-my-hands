@@ -93,18 +93,23 @@ class ReusableDeploymentExecutor:
             result = self._execute(review_id, plan)
         except Exception as exc:
             log.exception("reusable deployment failed: %s", review_id)
+            error_text = str(exc)
+            error_class = _classify_deployment_error(error_text)
+            failure_summary = f"真实部署失败（{error_class['label']}）：{error_text}"
             failed_decision = {
                 **decision,
                 "approval_summary": approval_summary,
                 "deploy_status": "failed",
-                "summary": f"真实部署失败：{exc}",
-                "execution_summary": f"真实部署失败：{exc}",
-                "error": str(exc),
+                "summary": failure_summary,
+                "execution_summary": failure_summary,
+                "error": error_text,
+                "error_type": error_class["type"],
+                "recommended_action": error_class["action"],
                 "deploy_completed_at": utc_now_iso(),
             }
             self.store.decide_review(review_id, "deploy_failed", failed_decision)
             updated = self.store.get_review(review_id) or review
-            self._mark_task_entry_status(updated, "deploy_failed", summary=str(exc))
+            self._mark_task_entry_status(updated, "deploy_failed", summary=failure_summary)
             self._send_card(updated, failed_decision)
             return True
 
@@ -1239,6 +1244,70 @@ def _short(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 1] + "…"
+
+
+def _classify_deployment_error(error: str) -> dict[str, str]:
+    text = str(error or "")
+    lower = text.lower()
+    if "weight conversion failed" in lower or "conversion" in lower and "failed" in lower:
+        return {
+            "type": "weight_conversion",
+            "label": "权重转换失败",
+            "action": "检查转换机资源、转换脚本输出和目标目录；137 通常优先看内存/OOM。",
+        }
+    if "can't find window" in lower or "has no worker ssh window" in lower or "failed to reconnect" in lower:
+        return {
+            "type": "worker_tmux_disconnected",
+            "label": "worker tmux/SSH 断开",
+            "action": "先用 reconnect-plan 或文档里的 SSH 历史命令恢复 worker 窗口，再重试。",
+        }
+    if "server gave bad signature" in lower or "hostkeys" in lower or "host key" in lower:
+        return {
+            "type": "ssh_host_key",
+            "label": "SSH host key 问题",
+            "action": "清理或更新 known_hosts，确认命令包含 UpdateHostKeys=no 后重试。",
+        }
+    if "gpu" in lower and ("busy" in lower or "not idle" in lower or "still busy" in lower):
+        return {
+            "type": "gpu_busy",
+            "label": "GPU 残留进程",
+            "action": "进入 worker 检查 nvidia-smi，清理残留 vLLM/worker 进程后重试。",
+        }
+    if "model path missing" in lower or "model directory is not deployable" in lower or "remote command failed" in lower and "ls" in lower:
+        return {
+            "type": "model_path",
+            "label": "模型路径异常",
+            "action": "检查子任务路径、前缀转换和 HF/config 文件是否存在。",
+        }
+    if "feishu http 401" in lower or "authentication token expired" in lower:
+        return {
+            "type": "feishu_auth",
+            "label": "飞书认证失效",
+            "action": "刷新用户 token 或检查应用 tenant token 配置。",
+        }
+    if "feishu http 403" in lower or "no permission" in lower or "forbidden" in lower:
+        return {
+            "type": "feishu_permission",
+            "label": "飞书权限不足",
+            "action": "检查 bot 是否被加入文档/任务，或对应 API 权限是否已开通。",
+        }
+    if "temporary failure in name resolution" in lower or "name resolution" in lower or "connecterror" in lower:
+        return {
+            "type": "network",
+            "label": "网络/DNS 异常",
+            "action": "检查代理、DNS、Feishu OpenAPI 和 worker 网络连通性后重试。",
+        }
+    if "/v1/models" in lower or "model id" in lower or "health" in lower:
+        return {
+            "type": "vllm_health",
+            "label": "vLLM 健康检查失败",
+            "action": "查看 tmux vLLM 日志，确认端口、served-model-name 和启动参数。",
+        }
+    return {
+        "type": "unknown",
+        "label": "未分类错误",
+        "action": "查看任务卡片和 tmux 日志，必要时人工处理后重试。",
+    }
 
 
 def _timeout_output_to_text(value: str | bytes | None) -> str:
