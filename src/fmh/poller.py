@@ -26,12 +26,30 @@ from fmh.operator_review import (
 )
 from fmh.orchestrator import DeploymentOrchestrator
 from fmh.parser import ParseError, parse_deployment_request
-from fmh.reusable_workers import build_plan_for_row, build_reusable_deployment_plan, parse_deployed_models_table
+from fmh.reusable_workers import (
+    build_plan_for_row,
+    build_reusable_deployment_plan,
+    normalize_model_path,
+    parse_deployed_models_table,
+)
 from fmh.store import StateStore
 from fmh.task_status import task_status_card, task_status_with_stage
 from fmh.weight_conversion import plan_weight_conversion, resolve_deployable_weight_path
 
 log = logging.getLogger(__name__)
+
+_EQUIVALENT_ENTRY_STATUSES = {
+    "review_pending",
+    "codex_reviewing",
+    "approved",
+    "deploying",
+    "submitted",
+    "deployed",
+    "deploy_failed",
+    "needs_human",
+    "failed_review",
+    "failed_parse",
+}
 
 
 class PollingFeishuClient(Protocol):
@@ -421,11 +439,12 @@ class FeishuPollingWorker:
 
         entry_pairs = [(entry, _task_entry_key(task_id, entry)) for entry in entries]
         entry_states = {item_key: self.store.get_processed_item(task_key, item_key) for _, item_key in entry_pairs}
+        entry_states = self._merge_equivalent_task_entry_states(task_key, entry_pairs, entry_states)
         entry_states = self._refresh_task_entry_states_from_reviews(task_key, entry_states)
         pending_pairs = [
             (entry, item_key)
             for entry, item_key in entry_pairs
-            if self._should_process_task_entry(task_key, item_key)
+            if self._should_process_task_entry_state(task_key, item_key, entry_states.get(item_key))
         ]
         pending_entries = [entry for entry, _ in pending_pairs]
         if not pending_entries:
@@ -572,7 +591,14 @@ class FeishuPollingWorker:
         ), submitted_ids, failed
 
     def _should_process_task_entry(self, task_key: str, item_key: str) -> bool:
-        processed = self.store.get_processed_item(task_key, item_key)
+        return self._should_process_task_entry_state(task_key, item_key, self.store.get_processed_item(task_key, item_key))
+
+    def _should_process_task_entry_state(
+        self,
+        task_key: str,
+        item_key: str,
+        processed: dict[str, object] | None,
+    ) -> bool:
         if processed is None:
             return True
         if str(processed.get("status") or "") != "retry_waiting":
@@ -638,6 +664,49 @@ class FeishuPollingWorker:
             self.store.mark_processed_item(task_key, item_key, mapped_status, request_id=review_id, summary=summary)
             refreshed[item_key] = self.store.get_processed_item(task_key, item_key)
         return refreshed
+
+    def _merge_equivalent_task_entry_states(
+        self,
+        task_key: str,
+        entry_pairs: list[tuple[dict[str, Any], str]],
+        entry_states: dict[str, dict[str, object] | None],
+    ) -> dict[str, dict[str, object] | None]:
+        if all(state is not None for state in entry_states.values()):
+            return entry_states
+        historical = self.store.list_processed_items(task_key, limit=1000)
+        by_prefix: dict[str, list[dict[str, object]]] = {}
+        for state in historical:
+            status = str(state.get("status") or "")
+            if status not in _EQUIVALENT_ENTRY_STATUSES:
+                continue
+            item_id = str(state.get("item_id") or "")
+            prefix = _task_subtask_prefix(item_id)
+            if prefix:
+                by_prefix.setdefault(prefix, []).append(state)
+        merged = dict(entry_states)
+        for entry, item_key in entry_pairs:
+            if merged.get(item_key) is not None:
+                continue
+            prefix = f"{task_key.removeprefix('todo:')}:{entry['subtask_guid']}:"
+            equivalent = self._equivalent_task_entry_state(entry, item_key, by_prefix.get(prefix, []))
+            if equivalent is not None:
+                merged[item_key] = equivalent
+        return merged
+
+    def _equivalent_task_entry_state(
+        self,
+        entry: dict[str, Any],
+        item_key: str,
+        candidates: list[dict[str, object]],
+    ) -> dict[str, object] | None:
+        current_aliases = _entry_path_aliases(entry, item_key, self.config)
+        if not current_aliases:
+            return None
+        for state in candidates:
+            historical_aliases = _processed_item_path_aliases(state, self.store, self.config)
+            if current_aliases.intersection(historical_aliases):
+                return state
+        return None
 
     def _schedule_reuse_plan_retry(
         self,
@@ -1733,6 +1802,95 @@ def _task_entry_key(task_id: str, entry: dict[str, Any]) -> str:
     if entry.get("resolved_weight_path") and entry.get("original_weight_path"):
         path = str(entry["original_weight_path"])
     return f"{task_id}:{entry['subtask_guid']}:{path}"
+
+
+def _task_subtask_prefix(item_key: str) -> str:
+    parts = str(item_key or "").split(":", 2)
+    if len(parts) < 3 or not parts[0] or not parts[1]:
+        return ""
+    return f"{parts[0]}:{parts[1]}:"
+
+
+def _task_entry_path_from_key(item_key: str) -> str:
+    parts = str(item_key or "").split(":", 2)
+    return parts[2] if len(parts) == 3 else ""
+
+
+def _entry_path_aliases(entry: dict[str, Any], item_key: str, config: AppConfig) -> set[str]:
+    aliases: set[str] = set()
+    for value in (
+        _task_entry_path_from_key(item_key),
+        entry.get("weight_path"),
+        entry.get("original_weight_path"),
+        entry.get("resolved_weight_path"),
+    ):
+        aliases.update(_path_aliases(str(value or ""), config))
+    conversion = entry.get("weight_conversion") if isinstance(entry.get("weight_conversion"), dict) else None
+    if conversion:
+        aliases.update(_conversion_path_aliases(conversion, config))
+    return aliases
+
+
+def _processed_item_path_aliases(
+    state: dict[str, object],
+    store: StateStore,
+    config: AppConfig,
+) -> set[str]:
+    aliases = _path_aliases(_task_entry_path_from_key(str(state.get("item_id") or "")), config)
+    review_id = str(state.get("request_id") or "")
+    if review_id:
+        review = store.get_review(review_id)
+        if review:
+            aliases.update(_review_path_aliases(review, config))
+    return aliases
+
+
+def _review_path_aliases(review: dict[str, object], config: AppConfig) -> set[str]:
+    payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
+    aliases: set[str] = set()
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+    aliases.update(_path_aliases(str(context.get("weight_path") or ""), config))
+    path = plan.get("path") if isinstance(plan.get("path"), dict) else {}
+    for key in ("original_path", "worker_path", "table_path"):
+        aliases.update(_path_aliases(str(path.get(key) or ""), config))
+    for container in (context, plan):
+        conversion = container.get("weight_conversion") if isinstance(container.get("weight_conversion"), dict) else None
+        if conversion:
+            aliases.update(_conversion_path_aliases(conversion, config))
+    return aliases
+
+
+def _conversion_path_aliases(conversion: dict[str, Any], config: AppConfig) -> set[str]:
+    aliases: set[str] = set()
+    for key in ("original_weight_path", "input_path", "output_path"):
+        aliases.update(_path_aliases(str(conversion.get(key) or ""), config))
+    return aliases
+
+
+def _path_aliases(path: str, config: AppConfig) -> set[str]:
+    cleaned = str(path or "").strip().strip("`'\"，,").rstrip("/")
+    if not cleaned:
+        return set()
+    aliases = {cleaned}
+    reusable = config.reusable_workers
+    try:
+        normalized = normalize_model_path(cleaned, reusable)
+    except Exception:
+        normalized = None
+    if normalized is not None:
+        aliases.update(
+            value.rstrip("/")
+            for value in (normalized.original_path, normalized.worker_path, normalized.table_path)
+            if value
+        )
+    source_prefix = reusable.source_model_prefix.rstrip("/")
+    worker_prefix = reusable.worker_model_prefix.rstrip("/")
+    if source_prefix and worker_prefix and cleaned.startswith(source_prefix + "/"):
+        aliases.add((worker_prefix + cleaned[len(source_prefix) :]).rstrip("/"))
+    if source_prefix and worker_prefix and cleaned.startswith(worker_prefix + "/"):
+        aliases.add((source_prefix + cleaned[len(worker_prefix) :]).rstrip("/"))
+    return {alias for alias in aliases if alias}
 
 
 def _task_item_status_key(task_key: str, item_key: str) -> str:

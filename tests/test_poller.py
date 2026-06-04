@@ -1010,6 +1010,85 @@ def test_known_todo_task_404_is_disabled_until_reshared_successfully(tmp_path) -
     assert store.get_processed_item("todo:task_deleted", "task_deleted:sub_1:/mnt/models/model-a")["status"] == "submitted"
 
 
+def test_known_todo_deduplicates_same_subtask_with_changed_weight_path_key(tmp_path) -> None:
+    original_path = "/mnt/shared-storage-user/ma4agi-gpu/zhangchen/run/iter_0000004"
+    converted_path = "/mnt/gpfs/ma4agi-gpu/zhangchen/run/hf_iter_0000004"
+    fake = FakeFeishuClient(
+        [],
+        task={"guid": "task_convert_done", "summary": "converted task"},
+        subtasks=[{"guid": "sub_1", "summary": original_path, "description": ""}],
+    )
+    config = AppConfig(
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True),
+        reusable_workers=ReusableWorkersConfig(
+            source_model_prefix="/mnt/shared-storage-user/ma4agi-gpu",
+            worker_model_prefix="/mnt/gpfs/ma4agi-gpu",
+            table_model_prefix="/mnt/gpfs/ma4agi-gpu",
+        ),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.create_review(
+        "rvw-old",
+        "reuse_row_selected",
+        "192.0.2.14:hf_iter_0000004",
+        {
+            "stage": "reuse_row_selected",
+            "plan": {
+                "path": {
+                    "original_path": converted_path,
+                    "worker_path": converted_path,
+                    "table_path": "zhangchen/run/hf_iter_0000004",
+                },
+                "weight_conversion": {
+                    "original_weight_path": original_path,
+                    "input_path": original_path.replace(
+                        "/mnt/shared-storage-user/ma4agi-gpu",
+                        "/mnt/gpfs/ma4agi-gpu",
+                    ),
+                    "output_path": converted_path,
+                },
+            },
+            "context": {
+                "weight_path": converted_path,
+                "weight_conversion": {
+                    "original_weight_path": original_path,
+                    "input_path": original_path.replace(
+                        "/mnt/shared-storage-user/ma4agi-gpu",
+                        "/mnt/gpfs/ma4agi-gpu",
+                    ),
+                    "output_path": converted_path,
+                },
+            },
+        },
+        status="deployed",
+    )
+    store.mark_processed_item(
+        "todo:task_convert_done",
+        f"task_convert_done:sub_1:{converted_path}",
+        "deployed",
+        request_id="rvw-old",
+        summary="already deployed",
+    )
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    stats, submitted_ids, failed = worker._process_task_subtasks(  # noqa: SLF001
+        "task_convert_done",
+        "todo:task_convert_done",
+        chat_id="oc_1",
+    )
+
+    assert stats.submitted == 0
+    assert stats.ignored == 1
+    assert submitted_ids == []
+    assert failed == 0
+    assert store.get_processed_item("todo:task_convert_done", f"task_convert_done:sub_1:{original_path}") is None
+    assert store.list_requests() == []
+
+
 def test_polling_todo_task_skips_done_and_active_entries_processes_new_only(tmp_path) -> None:
     fake = FakeFeishuClient(
         [],

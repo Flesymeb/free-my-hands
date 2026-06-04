@@ -193,6 +193,30 @@ class StateStore:
             "processed_at": row["processed_at"],
         }
 
+    def list_processed_items(self, source_key: str, limit: int = 500) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT source_key, item_id, request_id, status, summary, processed_at
+                FROM processed_items
+                WHERE source_key = ?
+                ORDER BY processed_at DESC
+                LIMIT ?
+                """,
+                (source_key, limit),
+            ).fetchall()
+        return [
+            {
+                "source_key": row["source_key"],
+                "item_id": row["item_id"],
+                "request_id": row["request_id"],
+                "status": row["status"],
+                "summary": row["summary"],
+                "processed_at": row["processed_at"],
+            }
+            for row in rows
+        ]
+
     def mark_processed_item(
         self,
         source_key: str,
