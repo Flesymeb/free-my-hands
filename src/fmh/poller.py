@@ -291,8 +291,12 @@ class FeishuPollingWorker:
         msg_id: str,
     ) -> PollStats:
         msg_type = str(item.get("msg_type") or item.get("message_type") or "")
-        if self.config.polling.ignore_self_messages and _is_self_or_bot_message(item, self.config.feishu.app_id):
-            self.store.mark_processed_item(source_key, msg_id, "ignored", summary="self/bot message")
+        if self.config.polling.ignore_self_messages and _is_self_message(
+            item,
+            self.config.feishu.app_id,
+            self._current_bot_open_id(),
+        ):
+            self.store.mark_processed_item(source_key, msg_id, "ignored", summary="self message")
             return PollStats(scanned=1, ignored=1)
 
         if msg_type == "todo" and self.config.polling.deploy_todo_subtasks:
@@ -1185,17 +1189,16 @@ def _message_text(item: dict[str, Any]) -> str:
     return ""
 
 
-def _is_self_or_bot_message(item: dict[str, Any], app_id: str) -> bool:
+def _is_self_message(item: dict[str, Any], app_id: str, bot_open_id: str = "") -> bool:
     sender = item.get("sender") if isinstance(item.get("sender"), dict) else {}
-    sender_type = str(sender.get("sender_type") or item.get("sender_type") or "").lower()
-    if sender_type in {"app", "bot"}:
-        return True
     sender_id = sender.get("sender_id") if isinstance(sender.get("sender_id"), dict) else {}
-    return bool(app_id and sender_id.get("app_id") == app_id)
+    sender_app_id = str(sender_id.get("app_id") or item.get("app_id") or "").strip()
+    sender_open_id = str(sender_id.get("open_id") or sender_id.get("user_id") or item.get("open_id") or "").strip()
+    return bool((app_id and sender_app_id == app_id) or (bot_open_id and sender_open_id == bot_open_id))
 
 
 def _parse_codex_control_command(text: str) -> str | None:
-    stripped = text.strip().lower()
+    stripped = _manual_command_text(text)
     mapping = {
         "codex on": "on",
         "codex off": "off",

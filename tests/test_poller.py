@@ -515,6 +515,111 @@ def test_at_only_command_returns_help_card(tmp_path) -> None:
     assert "codex on/off/status" in rendered
 
 
+def test_polling_ignores_only_self_app_messages(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_self",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {
+                    "sender_type": "app",
+                    "sender_id": {"app_id": "cli_bot", "open_id": "ou_bot"},
+                    "sender_name": "self bot",
+                },
+                "body": {"content": '{"text":"deploy_vllm\\nweight_path: /mnt/models/self"}'},
+            }
+        ]
+    )
+    config = AppConfig(
+        feishu=FeishuConfig(app_id="cli_bot", bot_open_id="ou_bot"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    stats = worker.poll_once()
+
+    assert stats.ignored == 1
+    assert store.get_processed_item("chat:oc_1", "om_self")["status"] == "ignored"
+    assert store.list_requests() == []
+
+
+def test_other_bot_at_current_bot_is_not_ignored(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_other_bot",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {
+                    "sender_type": "app",
+                    "sender_id": {"app_id": "cli_other", "open_id": "ou_other_bot"},
+                    "sender_name": "other bot",
+                },
+                "body": {"content": '{"text":"@_user_1"}'},
+                "mentions": [{"id": "ou_bot", "id_type": "open_id", "key": "@_user_1", "name": "模型部署bot"}],
+            }
+        ]
+    )
+    config = AppConfig(
+        feishu=FeishuConfig(app_id="cli_bot", bot_open_id="ou_bot"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    worker.poll_once()
+
+    assert store.get_processed_item("chat:oc_1", "om_other_bot")["status"] == "help"
+    assert fake.chat_texts[-1] == ("om_other_bot", "可用指令")
+
+
+def test_at_codex_status_command_is_parsed(tmp_path) -> None:
+    now_ms = int(time.time()) * 1000
+    fake = FakeFeishuClient(
+        [
+            {
+                "message_id": "om_codex",
+                "msg_type": "text",
+                "create_time": str(now_ms),
+                "sender": {"sender_id": {"open_id": "ou_1"}, "sender_name": "tester"},
+                "body": {"content": '{"text":"@_user_1 codex status"}'},
+                "mentions": [{"id": "ou_bot", "id_type": "open_id", "key": "@_user_1", "name": "模型部署bot"}],
+            }
+        ]
+    )
+    config = AppConfig(
+        feishu=FeishuConfig(app_id="cli_bot", bot_open_id="ou_bot"),
+        storage=StorageConfig(sqlite_path=str(tmp_path / "state.sqlite3")),
+        runner=RunnerConfig(mode="dry-run", log_dir=str(tmp_path / "logs")),
+        polling=PollingConfig(chat_ids=["oc_1"], notify_chat_on_accept=True),
+        vllm=VLLMConfig(command_template="echo vllm {weight_path} {port}"),
+    )
+    store = StateStore(config.storage.sqlite_path)
+    store.set_cursor("chat:oc_1", str((now_ms // 1000) - 10))
+    orchestrator = DeploymentOrchestrator(config, store, make_runner(config.runner), fake)
+    worker = FeishuPollingWorker(config, store, fake, orchestrator)
+
+    worker.poll_once()
+
+    assert store.get_processed_item("chat:oc_1", "om_codex")["status"] == "codex_control"
+    rendered = json.dumps(fake.sent_cards[-1], ensure_ascii=False)
+    assert "Codex 审核开关" in rendered
+
+
 def test_node_status_command_reports_worker_counts(tmp_path) -> None:
     now_ms = int(time.time()) * 1000
     markdown = """<table><tbody>
